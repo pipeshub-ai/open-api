@@ -48,12 +48,28 @@ jobs:
             --jq '.[0].number // empty')
           echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
 
+      - name: Check if sync branch already matches upstream
+        if: steps.diff.outputs.changed == 'true' && steps.existing_pr.outputs.number != ''
+        id: branch_diff
+        run: |
+          git fetch origin auto/sync-openapi-spec 2>/dev/null || true
+          if git rev-parse --verify origin/auto/sync-openapi-spec >/dev/null 2>&1; then
+            git show origin/auto/sync-openapi-spec:source_specs/pipeshub-openapi.yaml > /tmp/branch-openapi.yaml 2>/dev/null || true
+            if diff -q /tmp/branch-openapi.yaml /tmp/upstream-openapi.yaml > /dev/null 2>&1; then
+              echo "branch_matches=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "branch_matches=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "branch_matches=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Apply upstream changes
-        if: steps.diff.outputs.changed == 'true'
+        if: steps.diff.outputs.changed == 'true' && steps.branch_diff.outputs.branch_matches != 'true'
         run: cp /tmp/upstream-openapi.yaml source_specs/pipeshub-openapi.yaml
 
       - name: Commit and push
-        if: steps.diff.outputs.changed == 'true'
+        if: steps.diff.outputs.changed == 'true' && steps.branch_diff.outputs.branch_matches != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -64,7 +80,7 @@ jobs:
           git push --force-with-lease origin auto/sync-openapi-spec
 
       - name: Close outdated PR
-        if: steps.diff.outputs.changed == 'true' && steps.existing_pr.outputs.number != ''
+        if: steps.diff.outputs.changed == 'true' && steps.branch_diff.outputs.branch_matches != 'true' && steps.existing_pr.outputs.number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -72,7 +88,7 @@ jobs:
             --comment "Superseded by a newer sync. A new PR will be created with the latest upstream changes."
 
       - name: Create pull request
-        if: steps.diff.outputs.changed == 'true'
+        if: steps.diff.outputs.changed == 'true' && steps.branch_diff.outputs.branch_matches != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -98,10 +114,11 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          if [ "${{ steps.diff.outputs.changed }}" == "true" ]; then
-            echo "### OpenAPI Spec Sync" >> "$GITHUB_STEP_SUMMARY"
-            echo "Upstream changes detected — PR created/updated." >> "$GITHUB_STEP_SUMMARY"
+          echo "### OpenAPI Spec Sync" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.diff.outputs.changed }}" != "true" ]; then
+            echo "No changes detected — spec is already in sync with upstream." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.branch_diff.outputs.branch_matches }}" == "true" ]; then
+            echo "Existing sync PR already contains the latest upstream changes — skipped." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### OpenAPI Spec Sync" >> "$GITHUB_STEP_SUMMARY"
-            echo "No changes detected — spec is already in sync." >> "$GITHUB_STEP_SUMMARY"
+            echo "Upstream changes detected — PR created/updated." >> "$GITHUB_STEP_SUMMARY"
           fi
