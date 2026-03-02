@@ -27,11 +27,11 @@ generation:
   versioningStrategy: automatic
   persistentEdits: {}
   tests:
-    generateTests: true
+    generateTests: false
     generateNewTests: true
     skipResponseBodyAssertions: false
 mcp-typescript:
-  version: 1.0.0
+  version: 1.0.1
   additionalDependencies:
     dependencies: {}
     dev: {}
@@ -96,6 +96,7 @@ python:
       webhooks: ""
   inferUnionDiscriminators: true
   inputModelSuffix: input
+  license: Apache-2.0
   maxMethodParams: 999
   methodArguments: infer-optional-args
   moduleName: pipeshub_sdk
@@ -119,6 +120,7 @@ typescript:
     devDependencies: {}
     main: {}
     peerDependencies: {}
+  additionalPackageJSON: {}
   additionalScripts: {}
   alwaysIncludeInboundAndOutbound: false
   author: Pipeshub
