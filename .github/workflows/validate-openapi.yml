@@ -1,0 +1,66 @@
+name: Validate OpenAPI Spec
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "source_specs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    name: Validate OpenAPI Specification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Speakeasy CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/speakeasy-api/speakeasy/main/install.sh | sh
+          echo "$HOME/.speakeasy/bin" >> "$GITHUB_PATH"
+        env:
+          SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
+
+      - name: Validate OpenAPI spec
+        run: speakeasy validate openapi -s source_specs/pipeshub-openapi.yaml
+
+      - name: Lint OpenAPI spec
+        run: speakeasy lint openapi -s source_specs/pipeshub-openapi.yaml
+
+      - name: Post validation summary
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request.number;
+            const status = '${{ job.status }}' === 'success' ? 'passed' : 'failed';
+            const icon = status === 'passed' ? ':white_check_mark:' : ':x:';
+
+            const body = `### ${icon} OpenAPI Spec Validation ${status}\n\n` +
+              `**Spec file:** \`source_specs/pipeshub-openapi.yaml\`\n` +
+              `**Workflow run:** [View details](${context.payload.repository.html_url}/actions/runs/${context.runId})`;
+
+            // Find existing bot comment
+            const comments = await github.rest.issues.listComments({
+              owner, repo, issue_number: pr
+            });
+            const existing = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes('OpenAPI Spec Validation')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pr, body
+              });
+            }

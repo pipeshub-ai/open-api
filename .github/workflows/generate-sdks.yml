@@ -1,0 +1,170 @@
+name: Generate SDKs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "source_specs/**"
+      - ".speakeasy/**"
+  workflow_dispatch:
+
+# Only one SDK generation at a time; cancel older runs
+concurrency:
+  group: sdk-generation
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  generate-sdk:
+    name: Generate ${{ matrix.target.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - lang: typescript
+            name: TypeScript SDK
+            repo: pipeshub-ai/pipeshub-sdk-typescript
+            branch_prefix: auto/sdk-update
+          - lang: python
+            name: Python SDK
+            repo: pipeshub-ai/pipeshub-sdk-python
+            branch_prefix: auto/sdk-update
+          - lang: mcp-typescript
+            name: MCP Server
+            repo: pipeshub-ai/mcp-server
+            branch_prefix: auto/mcp-update
+    steps:
+      - name: Checkout spec repo
+        uses: actions/checkout@v4
+        with:
+          path: spec-repo
+
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.target.repo }}
+          token: ${{ secrets.GH_TOKEN }}
+          path: target-repo
+          ref: main
+
+      - name: Install Speakeasy CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/speakeasy-api/speakeasy/main/install.sh | sh
+          echo "$HOME/.speakeasy/bin" >> "$GITHUB_PATH"
+        env:
+          SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
+
+      - name: Clean generated src before regeneration
+        working-directory: target-repo
+        run: |
+          if [ -d "src" ]; then
+            rm -rf src
+          fi
+
+      - name: Generate SDK
+        working-directory: spec-repo
+        run: |
+          speakeasy generate sdk \
+            -s source_specs/pipeshub-openapi.yaml \
+            -l ${{ matrix.target.lang }} \
+            -o "$GITHUB_WORKSPACE/target-repo" \
+            -p
+        env:
+          SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
+
+      - name: Clean up generated README
+        working-directory: target-repo
+        run: |
+          if [ -f "README.md" ]; then
+            # Remove the MIT license badge line
+            sed -i '/\[!\[License: MIT\]/d' README.md
+            # Remove the "not ready for production" warning block
+            sed -i '/\[!IMPORTANT\]/,/publishing to a package manager/d' README.md
+          fi
+
+      - name: Check for changes
+        id: changes
+        working-directory: target-repo
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Get spec commit info
+        if: steps.changes.outputs.has_changes == 'true'
+        id: spec_info
+        working-directory: spec-repo
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha_full=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "commit_msg=$(git log -1 --pretty=format:'%s')" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        if: steps.changes.outputs.has_changes == 'true'
+        working-directory: target-repo
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          BRANCH="${{ matrix.target.branch_prefix }}-${{ steps.spec_info.outputs.sha_short }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create branch (force-update if it exists from a previous failed run)
+          git checkout -B "$BRANCH"
+          git add -A
+          git commit -m "$(cat <<'EOF'
+          chore: regenerate ${{ matrix.target.name }} from OpenAPI spec update
+
+          Spec commit: ${{ steps.spec_info.outputs.sha_short }}
+          Spec change: ${{ steps.spec_info.outputs.commit_msg }}
+          EOF
+          )"
+          git push --force-with-lease origin "$BRANCH"
+
+          # Check if a PR already exists for this branch
+          EXISTING_PR=$(gh pr list \
+            --repo "${{ matrix.target.repo }}" \
+            --head "$BRANCH" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR #$EXISTING_PR already exists for branch $BRANCH — updated via force push."
+          else
+            gh pr create \
+              --repo "${{ matrix.target.repo }}" \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: update ${{ matrix.target.name }} from OpenAPI spec (${{ steps.spec_info.outputs.sha_short }})" \
+              --body "$(cat <<'PREOF'
+          ## Auto-generated ${{ matrix.target.name }} Update
+
+          This PR was automatically created by the [OpenAPI spec repo](https://github.com/pipeshub-ai/open-api) when the spec was updated.
+
+          **Spec commit:** [`${{ steps.spec_info.outputs.sha_short }}`](https://github.com/pipeshub-ai/open-api/commit/${{ steps.spec_info.outputs.sha_full }})
+          **Spec change:** ${{ steps.spec_info.outputs.commit_msg }}
+          **Workflow run:** [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          ---
+          > Please review the generated changes before merging.
+          PREOF
+              )"
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ steps.changes.outputs.has_changes }}" == "true" ]; then
+            echo "### ${{ matrix.target.name }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Changes detected — PR created/updated in \`${{ matrix.target.repo }}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ${{ matrix.target.name }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "No changes detected — nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          fi

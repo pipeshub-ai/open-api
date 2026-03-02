@@ -1,0 +1,124 @@
+name: Sync OpenAPI Spec from upstream
+
+on:
+  schedule:
+    # Every 12 hours
+    - cron: "0 */12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-spec:
+    name: Sync OpenAPI spec from pipeshub-ai
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Fetch upstream spec
+        run: |
+          curl -fsSL \
+            "https://raw.githubusercontent.com/pipeshub-ai/pipeshub-ai/main/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml" \
+            -o /tmp/upstream-openapi.yaml
+
+      - name: Check for differences
+        id: diff
+        run: |
+          if diff -q source_specs/pipeshub-openapi.yaml /tmp/upstream-openapi.yaml > /dev/null 2>&1; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Find existing sync PR
+        if: steps.diff.outputs.changed == 'true'
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=$(gh pr list \
+            --head "auto/sync-openapi-spec" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+          echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if sync branch already matches upstream
+        if: steps.diff.outputs.changed == 'true' && steps.existing_pr.outputs.number != ''
+        id: branch_diff
+        run: |
+          git fetch origin auto/sync-openapi-spec 2>/dev/null || true
+          if git rev-parse --verify origin/auto/sync-openapi-spec >/dev/null 2>&1; then
+            git show origin/auto/sync-openapi-spec:source_specs/pipeshub-openapi.yaml > /tmp/branch-openapi.yaml 2>/dev/null || true
+            if diff -q /tmp/branch-openapi.yaml /tmp/upstream-openapi.yaml > /dev/null 2>&1; then
+              echo "branch_matches=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "branch_matches=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "branch_matches=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply upstream changes
+        if: steps.diff.outputs.changed == 'true' && steps.branch_diff.outputs.branch_matches != 'true'
+        run: cp /tmp/upstream-openapi.yaml source_specs/pipeshub-openapi.yaml
+
+      - name: Commit and push
+        if: steps.diff.outputs.changed == 'true' && steps.branch_diff.outputs.branch_matches != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -B auto/sync-openapi-spec
+          git add source_specs/pipeshub-openapi.yaml
+          git commit -m "chore: sync OpenAPI spec from upstream pipeshub-ai"
+          git push --force-with-lease origin auto/sync-openapi-spec
+
+      - name: Close outdated PR
+        if: steps.diff.outputs.changed == 'true' && steps.branch_diff.outputs.branch_matches != 'true' && steps.existing_pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr close ${{ steps.existing_pr.outputs.number }} \
+            --comment "Superseded by a newer sync. A new PR will be created with the latest upstream changes."
+
+      - name: Create pull request
+        if: steps.diff.outputs.changed == 'true' && steps.branch_diff.outputs.branch_matches != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head auto/sync-openapi-spec \
+            --title "chore: sync OpenAPI spec from upstream" \
+            --body "$(cat <<'EOF'
+          ## Upstream OpenAPI Spec Sync
+
+          This PR was automatically created because the OpenAPI spec in the
+          [upstream repo](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml)
+          has diverged from this repo.
+
+          **Source:** `pipeshub-ai/pipeshub-ai` (main branch)
+          **Workflow run:** [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          ---
+          > Please review the changes before merging.
+          EOF
+            )"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### OpenAPI Spec Sync" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.diff.outputs.changed }}" != "true" ]; then
+            echo "No changes detected — spec is already in sync with upstream." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.branch_diff.outputs.branch_matches }}" == "true" ]; then
+            echo "Existing sync PR already contains the latest upstream changes — skipped." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Upstream changes detected — PR created/updated." >> "$GITHUB_STEP_SUMMARY"
+          fi
