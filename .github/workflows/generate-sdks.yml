@@ -46,7 +46,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ matrix.target.repo }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_TOKEN }}
           path: target-repo
           ref: main
 
@@ -108,7 +108,7 @@ jobs:
         if: steps.changes.outputs.has_changes == 'true'
         working-directory: target-repo
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           BRANCH="${{ matrix.target.branch_prefix }}-${{ steps.spec_info.outputs.sha_short }}"
 
