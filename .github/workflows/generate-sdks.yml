@@ -110,12 +110,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          BRANCH="${{ matrix.target.branch_prefix }}-${{ steps.spec_info.outputs.sha_short }}"
+          # Use a fixed branch name so every run overwrites the same branch/PR
+          BRANCH="${{ matrix.target.branch_prefix }}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Create branch (force-update if it exists from a previous failed run)
+          # Create/switch to the fixed branch
           git checkout -B "$BRANCH"
           git add -A
           git commit -m "$(cat <<'EOF'
@@ -125,25 +126,17 @@ jobs:
           Spec change: ${{ steps.spec_info.outputs.commit_msg }}
           EOF
           )"
-          git push --force-with-lease origin "$BRANCH"
 
-          # Check if a PR already exists for this branch
-          EXISTING_PR=$(gh pr list \
+          # Force push to overwrite the stale remote branch
+          git push origin "$BRANCH" --force
+
+          # Create PR only if one doesn't already exist for this branch
+          gh pr create \
             --repo "${{ matrix.target.repo }}" \
+            --base main \
             --head "$BRANCH" \
-            --state open \
-            --json number \
-            --jq '.[0].number // empty')
-
-          if [ -n "$EXISTING_PR" ]; then
-            echo "PR #$EXISTING_PR already exists for branch $BRANCH — updated via force push."
-          else
-            gh pr create \
-              --repo "${{ matrix.target.repo }}" \
-              --base main \
-              --head "$BRANCH" \
-              --title "chore: update ${{ matrix.target.name }} from OpenAPI spec (${{ steps.spec_info.outputs.sha_short }})" \
-              --body "$(cat <<'PREOF'
+            --title "chore: update ${{ matrix.target.name }} from OpenAPI spec (${{ steps.spec_info.outputs.sha_short }})" \
+            --body "$(cat <<'PREOF'
           ## Auto-generated ${{ matrix.target.name }} Update
 
           This PR was automatically created by the [OpenAPI spec repo](https://github.com/pipeshub-ai/open-api) when the spec was updated.
@@ -155,8 +148,8 @@ jobs:
           ---
           > Please review the generated changes before merging.
           PREOF
-              )"
-          fi
+            )" \
+            || echo "PR already exists for branch $BRANCH — updated via force push."
 
       - name: Summary
         if: always()
