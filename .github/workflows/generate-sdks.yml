@@ -36,6 +36,12 @@ jobs:
             name: MCP Server
             repo: pipeshub-ai/mcp-server
             branch_prefix: auto/mcp-update
+          - lang: go
+            name: Go SDK
+            repo: pipeshub-ai/pipeshub-sdk-go
+            branch_prefix: auto/sdk-update
+          
+
     steps:
       - name: Checkout spec repo
         uses: actions/checkout@v4
