@@ -1,4 +1,4 @@
-speakeasyVersion: 1.731.2
+speakeasyVersion: 1.739.0
 sources:
     PipesHub API:
         sourceNamespace: pipes-hub-api
