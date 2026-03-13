@@ -6,7 +6,13 @@ on:
     paths:
       - "source_specs/**"
       - ".speakeasy/**"
+
   workflow_dispatch:
+    inputs:
+      speakeasy_version:
+        description: "Speakeasy CLI version"
+        required: false
+        default: "v1.739.0"
 
 # Only one SDK generation at a time; cancel older runs
 concurrency:
@@ -15,6 +21,10 @@ concurrency:
 
 permissions:
   contents: read
+
+# Use dispatch input if provided, otherwise fallback to default
+env:
+  SPEAKEASY_VERSION: ${{ github.event.inputs.speakeasy_version || 'v1.739.0' }}
 
 jobs:
   generate-sdk:
@@ -40,7 +50,6 @@ jobs:
             name: Go SDK
             repo: pipeshub-ai/pipeshub-sdk-go
             branch_prefix: auto/sdk-update
-          
 
     steps:
       - name: Checkout spec repo
@@ -58,7 +67,7 @@ jobs:
 
       - name: Install Speakeasy CLI
         run: |
-          curl -fsSL -o /tmp/speakeasy.zip https://github.com/speakeasy-api/speakeasy/releases/download/v1.739.0/speakeasy_linux_amd64.zip
+          curl -fsSL -o /tmp/speakeasy.zip https://github.com/speakeasy-api/speakeasy/releases/download/${SPEAKEASY_VERSION}/speakeasy_linux_amd64.zip
           unzip -o /tmp/speakeasy.zip -d /usr/local/bin speakeasy
           chmod +x /usr/local/bin/speakeasy
 
