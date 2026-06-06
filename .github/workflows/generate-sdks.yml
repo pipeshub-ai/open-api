@@ -42,10 +42,6 @@ jobs:
             name: Python SDK
             repo: pipeshub-ai/pipeshub-sdk-python
             branch_prefix: auto/sdk-update
-          - lang: mcp-typescript
-            name: MCP Server
-            repo: pipeshub-ai/mcp-server
-            branch_prefix: auto/mcp-update
           - lang: go
             name: Go SDK
             repo: pipeshub-ai/pipeshub-sdk-go
@@ -78,14 +74,15 @@ jobs:
             rm -rf src
           fi
 
+      - name: Copy Arazzo tests to SDK .speakeasy
+        run: |
+          mkdir -p target-repo/.speakeasy
+          cp spec-repo/.speakeasy/tests.arazzo.yaml target-repo/.speakeasy/tests.arazzo.yaml
+
       - name: Generate SDK
         working-directory: spec-repo
         run: |
-          speakeasy generate sdk \
-            -s source_specs/pipeshub-sdk-openapi.yaml \
-            -l ${{ matrix.target.lang }} \
-            -o "$GITHUB_WORKSPACE/target-repo" \
-            -p
+          speakeasy run -t ${{ matrix.target.lang }}
         env:
           SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
 

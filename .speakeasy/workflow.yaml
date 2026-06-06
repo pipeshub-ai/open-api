@@ -3,16 +3,31 @@ speakeasyVersion: 1.731.2
 sources:
     PipesHub API:
         inputs:
-            - location: source_specs/pipeshub-openapi.yaml
-        output: .speakeasy/out.openapi.yaml
+            - location: source_specs/pipeshub-sdk-openapi.yaml
         registry:
             location: registry.speakeasyapi.dev/pipeshub/test/pipes-hub-api
 targets:
-    typescript:
-        target: typescript
+    go:
+        target: go
         source: PipesHub API
-        output: ./ts-sdk
+        output: ./pipeshub-sdk-go
+        testing:
+          enabled: false
+          mockServer:
+            enabled: false
     python:
         target: python
         source: PipesHub API
-        output: ./python-sdk
+        output: ./pipeshub-sdk-python
+        testing:
+          enabled: false
+          mockServer:
+            enabled: false
+    typescript:
+        target: typescript
+        source: PipesHub API
+        output: ./pipeshub-sdk-typescript
+        testing:
+          enabled: false
+          mockServer:
+            enabled: false

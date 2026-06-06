@@ -1,9 +1,9 @@
-speakeasyVersion: 1.739.0
+speakeasyVersion: 1.731.2
 sources:
     PipesHub API:
         sourceNamespace: pipes-hub-api
-        sourceRevisionDigest: sha256:3d8707df1824b057cb0f1eff7063572cc453ad7f3f574288682719d681c5539e
-        sourceBlobDigest: sha256:f5cb6bc97ef7fe64bc854269ed02473f64a5a9a8d7e259a2ecc53c24edaec8ed
+        sourceRevisionDigest: sha256:e6670f15db907006408de2216a07798e180796fcbff0d5b9fe9bfd090b76de60
+        sourceBlobDigest: sha256:5146aa1ea8478cb420121ca4464d1d9599cdec8e20b82be8994f08e7f4151e86
         tags:
             - latest
             - 1.0.0
@@ -20,17 +20,42 @@ targets:
         sourceNamespace: pipes-hub-api
         sourceRevisionDigest: sha256:3d8707df1824b057cb0f1eff7063572cc453ad7f3f574288682719d681c5539e
         sourceBlobDigest: sha256:f5cb6bc97ef7fe64bc854269ed02473f64a5a9a8d7e259a2ecc53c24edaec8ed
+    python:
+        source: PipesHub API
+        sourceNamespace: pipes-hub-api
+        sourceRevisionDigest: sha256:e6670f15db907006408de2216a07798e180796fcbff0d5b9fe9bfd090b76de60
+        sourceBlobDigest: sha256:5146aa1ea8478cb420121ca4464d1d9599cdec8e20b82be8994f08e7f4151e86
 workflow:
     workflowVersion: 1.0.0
-    speakeasyVersion: latest
+    speakeasyVersion: 1.731.2
     sources:
         PipesHub API:
             inputs:
-                - location: source_specs/pipeshub-openapi.yaml
-            output: .speakeasy/out.openapi.yaml
+                - location: source_specs/pipeshub-sdk-openapi.yaml
             registry:
                 location: registry.speakeasyapi.dev/pipeshub/test/pipes-hub-api
     targets:
-        pipes-hub:
-            target: mcp-typescript
+        go:
+            target: go
             source: PipesHub API
+            output: ./pipeshub-sdk-go
+            testing:
+                enabled: false
+                mockServer:
+                    enabled: false
+        python:
+            target: python
+            source: PipesHub API
+            output: ./pipeshub-sdk-python
+            testing:
+                enabled: false
+                mockServer:
+                    enabled: false
+        typescript:
+            target: typescript
+            source: PipesHub API
+            output: ./pipeshub-sdk-typescript
+            testing:
+                enabled: false
+                mockServer:
+                    enabled: false
