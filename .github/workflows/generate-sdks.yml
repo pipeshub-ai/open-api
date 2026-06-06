@@ -58,7 +58,7 @@ jobs:
         with:
           repository: ${{ matrix.target.repo }}
           token: ${{ secrets.GH_TOKEN }}
-          path: target-repo
+          path: spec-repo/pipeshub-sdk-${{ matrix.target.lang }}
           ref: main
 
       - name: Install Speakeasy CLI
@@ -67,12 +67,16 @@ jobs:
           unzip -o /tmp/speakeasy.zip -d /usr/local/bin speakeasy
           chmod +x /usr/local/bin/speakeasy
 
-      - name: Clean generated src before regeneration
-        working-directory: target-repo
+      - name: Set up Go
+        if: matrix.target.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Copy Arazzo tests to SDK .speakeasy
         run: |
-          if [ -d "src" ]; then
-            rm -rf src
-          fi
+          mkdir -p spec-repo/pipeshub-sdk-${{ matrix.target.lang }}/.speakeasy
+          cp spec-repo/.speakeasy/tests.arazzo.yaml spec-repo/pipeshub-sdk-${{ matrix.target.lang }}/.speakeasy/tests.arazzo.yaml
 
       - name: Copy Arazzo tests to SDK .speakeasy
         run: |
@@ -86,8 +90,17 @@ jobs:
         env:
           SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
 
+      - name: Inject env var into TypeScript tests
+        if: matrix.target.lang == 'typescript'
+        working-directory: spec-repo/pipeshub-sdk-${{ matrix.target.lang }}
+        run: |
+          if [ -d "src/__tests__" ]; then
+            find src/__tests__ -name '*.ts' -exec sed -i \
+              's#clientID: "<YOUR_CLIENT_ID_HERE>",#clientID: process.env["PIPESHUB_CLIENT_ID"] ?? "value",#g' {} +
+          fi
+
       - name: Clean up generated README
-        working-directory: target-repo
+        working-directory: spec-repo/pipeshub-sdk-${{ matrix.target.lang }}
         run: |
           if [ -f "README.md" ]; then
             # Remove the MIT license badge line
@@ -98,7 +111,7 @@ jobs:
 
       - name: Check for changes
         id: changes
-        working-directory: target-repo
+        working-directory: spec-repo/pipeshub-sdk-${{ matrix.target.lang }}
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
@@ -117,7 +130,7 @@ jobs:
 
       - name: Create pull request
         if: steps.changes.outputs.has_changes == 'true'
-        working-directory: target-repo
+        working-directory: spec-repo/pipeshub-sdk-${{ matrix.target.lang }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
