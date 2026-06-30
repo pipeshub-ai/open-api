@@ -117,6 +117,8 @@ tags:
   description: Organization management operations
 - name: Knowledge Base
   description: Knowledge base management operations
+- name: Knowledge Hub
+  description: Unified browse API for root and child nodes (apps, record groups, folders, records) with filtering and search
 - name: Conversations
   description: AI-powered conversational chat management with citations and follow-up questions
 - name: Semantic Search
@@ -9880,6 +9882,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Internal server error while retrieving record details.
@@ -9925,6 +9933,8 @@ paths:
       operationId: updateRecord
       security:
       - bearerAuth: []
+      - oauth2:
+        - kb:write
       parameters:
       - name: recordId
         in: path
@@ -9964,13 +9974,41 @@ paths:
                       $ref: '#/components/schemas/Record'
                 - $ref: '#/components/schemas/UpdateRecordEnrichment'
         '400':
-          description: Invalid request
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: OAuth token is missing the required kb:write scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while updating record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
       - Knowledge Base
@@ -10239,6 +10277,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while creating folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/{kbId}/folder/{folderId}:
     put:
       tags:
@@ -10324,6 +10374,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while updating folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
       - Knowledge Base
@@ -10361,6 +10423,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FolderDeleteResponseSchema'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -10480,18 +10548,45 @@ paths:
                 $ref: '#/components/schemas/UploadStreamSSEEvent'
         '400':
           description: Invalid request - Check file types and sizes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Insufficient permissions (requires WRITER or higher)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Knowledge base or folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '413':
           description: File size exceeds maximum allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Too many upload requests, or too many concurrent uploads for this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Failed to verify knowledge base or folder access
+          content:
+            schema:
+              $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/limits:
     get:
       tags:
@@ -10773,10 +10868,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while moving record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/knowledge-hub/nodes:
     get:
       tags:
       - Knowledge Base
+      - Knowledge Hub
       summary: Get knowledge hub root nodes
       description: |
         Returns root-level nodes (connector apps and Collection apps) or, when
@@ -11260,6 +11368,7 @@ paths:
     get:
       tags:
       - Knowledge Base
+      - Knowledge Hub
       summary: Get knowledge hub child nodes
       description: |
         Returns the children of a specific node in the knowledge hub tree.
@@ -15841,6 +15950,7 @@ paths:
                   items:
                     type: string
                     format: binary
+                    x-speakeasy-name-override: File
       responses:
         '200':
           description: |
