@@ -3927,6 +3927,16 @@ components:
             `POST /conversations/attachments/upload`).
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
+        tools:
+          type: array
+          description: Tool call results invoked during this message turn.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              toolName:
+                type: string
+              toolResult: {}
         createdAt:
           type: string
           format: date-time
@@ -5740,7 +5750,7 @@ components:
           items:
             type: string
           description: Individual record ids in scope.
-    AgentToolset:
+    Toolset:
       type: object
       additionalProperties: false
       description: |
@@ -5802,7 +5812,18 @@ components:
                   tool's `fullName` is no longer in the runtime tool registry
                   (its `@tool` was removed). Read-only; ignored on create/update
                   bodies. Not stamped on the `GET /agents` list projection.
-    AgentKnowledge:
+    AgentFilters:
+      description: |
+        Knowledge scope filter as stored on the graph edge. The Node `getAgent`
+        handler proxies this field unchanged from the AI service (only `agent.id`
+        is stripped). May be a JSON string (typical graph storage) or an object.
+        Prefer `filtersParsed` on GET for a guaranteed parsed object with the
+        same keys as the object branch below.
+      oneOf:
+      - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
+      - type: string
+        description: JSON-encoded filter object (graph storage format).
+    Knowledge:
       type: object
       additionalProperties: false
       description: |
@@ -5820,16 +5841,7 @@ components:
         displayName:
           type: string
         filters:
-          description: |
-            Knowledge scope filter as stored on the graph edge. The Node `getAgent`
-            handler proxies this field unchanged from the AI service (only `agent.id`
-            is stripped). May be a JSON string (typical graph storage) or an object.
-            Prefer `filtersParsed` on GET for a guaranteed parsed object with the
-            same keys as the object branch below.
-          oneOf:
-          - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
-          - type: string
-            description: JSON-encoded filter object (graph storage format).
+          $ref: '#/components/schemas/AgentFilters'
         filtersParsed:
           readOnly: true
           description: |
@@ -5869,6 +5881,7 @@ components:
           description: System instructions that define agent behavior
         createdBy:
           type: string
+          format: objectId
           description: MongoDB user ID of the agent creator
         startMessage:
           type: string
@@ -5923,12 +5936,12 @@ components:
             Multiple instances of the same integration type are distinguished by `instanceId`
             and optional `instanceName`.
           items:
-            $ref: '#/components/schemas/AgentToolset'
+            $ref: '#/components/schemas/Toolset'
         knowledge:
           type: array
           description: Knowledge connectors and indexed scopes linked to the agent
           items:
-            $ref: '#/components/schemas/AgentKnowledge'
+            $ref: '#/components/schemas/Knowledge'
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
@@ -6123,7 +6136,7 @@ components:
             `GET /agents/{agentKey}`; the backend builds it from the graph edges
             for each agent on the returned page.
           items:
-            $ref: '#/components/schemas/AgentToolset'
+            $ref: '#/components/schemas/Toolset'
         knowledge:
           type: array
           description: |
@@ -6131,7 +6144,7 @@ components:
             projection as `GET /agents/{agentKey}`; the backend builds it from
             the graph edges for each agent on the returned page.
           items:
-            $ref: '#/components/schemas/AgentKnowledge'
+            $ref: '#/components/schemas/Knowledge'
         can_view:
           type: boolean
           description: Effective permission to view the agent.
@@ -7237,6 +7250,16 @@ components:
             `POST /agents/{agentKey}/conversations/attachments/upload`).
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
+        tools:
+          type: array
+          description: Tool call results invoked during this message turn.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              toolName:
+                type: string
+              toolResult: {}
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
