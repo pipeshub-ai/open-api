@@ -10908,7 +10908,7 @@ paths:
   /knowledgeBase/knowledge-hub/nodes:
     get:
       deprecated: true
-      x-speakeasy-deprecation-message: Use the Knowledge Base API instead (sdk.knowledge_base.get_root_nodes / get_child_nodes). This grouping will be removed in a future release
+      x-speakeasy-deprecation-message: Use the Knowledge Base API instead. This grouping will be removed in a future release
       tags:
       - Knowledge Base
       - Knowledge Hub
@@ -11394,7 +11394,7 @@ paths:
   /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}:
     get:
       deprecated: true
-      x-speakeasy-deprecation-message: Use the Knowledge Base API instead (sdk.knowledge_base.get_root_nodes / get_child_nodes). This grouping will be removed in a future release
+      x-speakeasy-deprecation-message: Use the Knowledge Base API instead. This grouping will be removed in a future release
       tags:
       - Knowledge Base
       - Knowledge Hub
