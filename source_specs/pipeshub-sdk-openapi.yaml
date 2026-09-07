@@ -687,6 +687,12 @@ components:
           type: string
         designation:
           type: string
+        role:
+          type: string
+          enum:
+          - admin
+          - member
+          description: Organization role stored on the user document (`admin` or `member`)
         hasLoggedIn:
           type: boolean
         isDeleted:
@@ -2251,6 +2257,7 @@ components:
       - OUTLOOK CALENDAR
       - MICROSOFT TEAMS
       - NOTION
+      - NOTION PERSONAL
       - SLACK
       - SLACK WORKSPACE
       - KB
@@ -2268,6 +2275,7 @@ components:
       - WEB
       - BOOKSTACK
       - GITHUB
+      - GITHUB TEAMS
       - SERVICENOW
       - SALESFORCE
       - S3
@@ -4049,15 +4057,15 @@ components:
           description: |
             Identifier for the AI model configuration to use.
             Available models depend on organization settings.
-          example: gpt-4-turbo
+          example: gpt-5.6-luna
         modelName:
           type: string
           description: Display name of the AI model
-          example: GPT-4 Turbo
+          example: gpt-5.6-luna
         modelFriendlyName:
           type: string
           description: Friendly display name of the selected model
-          example: GPT-4 Turbo
+          example: gpt-5.6-Luna
         chatMode:
           type: string
           enum:
@@ -4220,7 +4228,7 @@ components:
       example:
         query: what are some latest tech news?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
-        modelName: gpt-5.4-mini
+        modelName: gpt-5.6-luna
         modelFriendlyName: GPT 5.4 mini
         chatMode: quick
         timezone: Asia/Kolkata
@@ -4287,7 +4295,7 @@ components:
           type: string
           minLength: 1
           description: Provider model name (e.g. the underlying LLM identifier).
-          example: gpt-5.4-mini
+          example: gpt-5.6-luna
         modelFriendlyName:
           type: string
           minLength: 1
@@ -4534,7 +4542,7 @@ components:
       example:
         query: can you elaborate on the latest headlines?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
-        modelName: gpt-5.4-mini
+        modelName: gpt-5.6-luna
         modelFriendlyName: GPT 5.4 mini
         chatMode: quick
         timezone: Asia/Kolkata
@@ -4856,7 +4864,7 @@ components:
           description: Stable identifier of the configured model record
         modelName:
           type: string
-          description: Provider-facing model name (e.g. `gpt-4o-mini`)
+          description: Provider-facing model name (e.g. `gpt-5.6-luna`)
         modelProvider:
           type: string
           description: Provider key (e.g. `openai`, `anthropic`)
@@ -6821,7 +6829,7 @@ components:
           example:
           - modelType: llm
             provider: azureOpenAI
-            modelName: gpt-5.4-mini
+            modelName: gpt-5.6-luna
             modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
             isMultimodal: true
             isReasoning: true
@@ -15329,14 +15337,18 @@ paths:
                     type: object
                     additionalProperties: false
                     description: |
-                      The full conversation document after the title update,
-                      returned as stored in MongoDB.
+                      The conversation document after the title update, as
+                      stored in the `chatSessions` collection.
+
+                      Carries no `messages`: they live in `chatSessionMessages`
+                      (see `chat.session.schema.ts`) and this route neither
+                      reads nor joins them. Fetch the conversation by id to
+                      get its messages.
                     required:
                     - _id
                     - userId
                     - orgId
                     - initiator
-                    - messages
                     - isShared
                     - isDeleted
                     - isArchived
@@ -15369,157 +15381,6 @@ paths:
                         type: string
                         format: objectId
                         description: User who started the conversation
-                      messages:
-                        type: array
-                        description: All messages stored on this conversation.
-                        items:
-                          type: object
-                          additionalProperties: false
-                          required:
-                          - _id
-                          - messageType
-                          - content
-                          - contentFormat
-                          - citations
-                          - followUpQuestions
-                          - feedback
-                          - referenceData
-                          - createdAt
-                          - updatedAt
-                          properties:
-                            _id:
-                              type: string
-                              format: objectId
-                            messageType:
-                              type: string
-                              enum:
-                              - user_query
-                              - bot_response
-                              - error
-                              - feedback
-                              - system
-                              - tool_call
-                            content:
-                              type: string
-                            contentFormat:
-                              type: string
-                              enum:
-                              - MARKDOWN
-                              - JSON
-                              - HTML
-                              default: MARKDOWN
-                            confidence:
-                              type: string
-                              nullable: true
-                              description: |
-                                AI confidence in the answer. Present only on
-                                `bot_response` messages, and only when the
-                                model emitted a trailing confidence block.
-
-                                This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
-                            citations:
-                              type: array
-                              description: |
-                                References to source documents used in the
-                                response, stored as raw citation pointers
-                                (not populated on this endpoint).
-                              items:
-                                $ref: '#/components/schemas/CitationReference'
-                            followUpQuestions:
-                              type: array
-                              items:
-                                $ref: '#/components/schemas/FollowUpQuestion'
-                            feedback:
-                              type: array
-                              items:
-                                $ref: '#/components/schemas/MessageFeedback'
-                            referenceData:
-                              type: array
-                              description: |
-                                Reference IDs surfaced from tool responses,
-                                used for follow-up queries.
-                              items:
-                                type: object
-                                additionalProperties: false
-                                properties:
-                                  name:
-                                    type: string
-                                    description: Display name shown to the user.
-                                  id:
-                                    type: string
-                                    description: Technical identifier (numeric ID, UUID, etc.).
-                                  type:
-                                    type: string
-                                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-                                  app:
-                                    type: string
-                                    description: |
-                                      Source application (e.g. `jira`, `confluence`,
-                                      `sharepoint`, `slack`, `drive`, `gmail`).
-                                  webUrl:
-                                    type: string
-                                    description: URL to open the item in a browser.
-                                  metadata:
-                                    type: object
-                                    additionalProperties:
-                                      type: string
-                                    description: |
-                                      App-specific fields keyed by name (e.g. `key` for a Jira
-                                      project, `siteId` for a SharePoint document).
-                            modelInfo:
-                              $ref: '#/components/schemas/ConversationModelInfo'
-                            appliedFilters:
-                              type: object
-                              additionalProperties: false
-                              properties:
-                                apps:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
-                                kb:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
-                            attachments:
-                              type: array
-                              description: |
-                                Files uploaded for this message turn (see
-                                `POST /conversations/attachments/upload`).
-                              items:
-                                $ref: '#/components/schemas/ChatAttachmentRef'
-                            tools:
-                              type: array
-                              description: Tool call results invoked during this message turn.
-                              items:
-                                $ref: '#/components/schemas/MessageToolCall'
-                            reasoning:
-                              type: array
-                              description: Persisted chain-of-thought for this turn.
-                              items:
-                                $ref: '#/components/schemas/MessageReasoningTurn'
-                            parts:
-                              type: array
-                              description: Ordered agent-activity transcript for this turn.
-                              items:
-                                $ref: '#/components/schemas/MessagePart'
-                            metadata:
-                              type: object
-                              additionalProperties: false
-                              properties:
-                                processingTimeMs:
-                                  type: number
-                                modelVersion:
-                                  type: string
-                                aiTransactionId:
-                                  type: string
-                                reason:
-                                  type: string
-                            createdAt:
-                              type: string
-                              format: date-time
-                            updatedAt:
-                              type: string
-                              format: date-time
                       status:
                         type: string
                         enum:
@@ -16975,7 +16836,7 @@ paths:
                       isDeleted: false
                       isServiceAccount: false
                       models:
-                      - 99999999-8888-7777-6666-555555555555_gpt-5.4-mini
+                      - 99999999-8888-7777-6666-555555555555_gpt-5.6-luna
                       name: Customer Support Agent
                       startMessage: Hello! How can I help you today?
                       systemPrompt: You are a helpful assistant.
@@ -18723,7 +18584,7 @@ paths:
                         modelName:
                           type: string
                           description: Specific model name/identifier forwarded to the provider API when making inference calls.
-                          example: gpt-5.4-mini
+                          example: gpt-5.6-luna
                         modelKey:
                           type: string
                           format: uuid
@@ -18754,14 +18615,14 @@ paths:
                     models:
                     - modelType: llm
                       provider: azureOpenAI
-                      modelName: gpt-5.4-mini
+                      modelName: gpt-5.6-luna
                       modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
                       isMultimodal: true
                       isReasoning: true
                       isDefault: true
                     - modelType: llm
                       provider: azureOpenAI
-                      modelName: gpt-5.4
+                      modelName: gpt-5.6-terra
                       modelKey: 7af8d3a7-ad2e-43a1-8716-ae95e4fbc888
                       isMultimodal: true
                       isReasoning: true
