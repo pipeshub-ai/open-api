@@ -20,10 +20,31 @@ jobs:
           # Fetch all history so we can switch branches easily
           fetch-depth: 0
 
+      - name: Resolve latest upstream release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Releases are published by hand, and GitHub's "latest" follows the
+          # flags on each release: a beta without the pre-release flag (as
+          # v0.6.0-beta was) or a back-port would become "latest". Take the
+          # highest stable vX.Y.Z among the published releases instead.
+          releases="$(gh api --paginate "repos/pipeshub-ai/pipeshub-ai/releases?per_page=100" \
+            --jq '.[] | select((.draft or .prerelease) | not) | .tag_name')"
+          tag="$(printf '%s\n' "$releases" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          if [ -z "$tag" ]; then
+            echo "::error::Could not resolve a stable pipeshub-ai release tag"
+            exit 1
+          fi
+          echo "Resolved pipeshub-ai release: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Fetch upstream spec
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           curl -fsSL \
-            "https://raw.githubusercontent.com/pipeshub-ai/pipeshub-ai/main/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml" \
+            "https://raw.githubusercontent.com/pipeshub-ai/pipeshub-ai/refs/tags/${RELEASE_TAG}/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml" \
             -o /tmp/upstream-openapi.yaml
 
       - name: Set up Python
@@ -53,6 +74,8 @@ jobs:
 
       - name: Commit and push
         if: steps.diff.outputs.changed == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -66,7 +89,7 @@ jobs:
 
           # 3. Commit
           git add source_specs/pipeshub-openapi.yaml source_specs/pipeshub-sdk-openapi.yaml
-          git commit -m "chore: sync OpenAPI spec from upstream pipeshub-ai" || echo "No changes to commit"
+          git commit -m "chore: sync OpenAPI spec from upstream pipeshub-ai ${RELEASE_TAG}" || echo "No changes to commit"
           
           # 4. Use --force to overwrite the stale remote branch
           # In a sync bot context, --force is safer than --force-with-lease 
@@ -77,19 +100,24 @@ jobs:
         if: steps.diff.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          # Use 'gh pr create' with error handling if it already exists
+          title="chore: sync OpenAPI spec from upstream ${RELEASE_TAG}"
+          body="This PR was automatically created to sync the OpenAPI spec from the pipeshub-ai release [${RELEASE_TAG}](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/${RELEASE_TAG})."
+
+          # If the PR already exists, keep its title and body on the current release
           gh pr create \
             --base main \
             --head auto/sync-openapi-spec \
-            --title "chore: sync OpenAPI spec from upstream" \
-            --body "This PR was automatically created to sync the OpenAPI spec from upstream." \
-            || echo "PR already exists, skipping creation."
+            --title "$title" \
+            --body "$body" \
+            || gh pr edit auto/sync-openapi-spec --title "$title" --body "$body"
 
       - name: Summary
         if: always()
         run: |
           echo "### OpenAPI Spec Sync Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "Upstream release: \`${{ steps.release.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ steps.diff.outputs.changed }}" == "true" ]; then
             echo "✅ Upstream changes detected and pushed to branch." >> "$GITHUB_STEP_SUMMARY"
           else
