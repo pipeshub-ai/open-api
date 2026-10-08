@@ -79,6 +79,9 @@ tags:
     **Who can see which apps**
     - **Everyone (including org admins)** sees and manages only OAuth apps **they created** (`createdBy`). Other members' apps are hidden (not listed; individual operations return not found).
 
+    **Session only**
+    - Every `/oauth-clients/*` route requires the user's interactive session JWT. OAuth access tokens and personal access tokens (`phpat_...`) are rejected with `403`, so a token issued to a client can never register, reconfigure, or revoke clients on its own.
+
     **Who authorizes vs. client credentials**
     - **Authorization code:** Any authenticated user in the workspace may complete consent for a valid `client_id`; issued tokens represent **that user**.
     - **Client credentials:** Access tokens represent the **OAuth app creator** (who registered the client), not the caller.
@@ -105,6 +108,13 @@ tags:
     **Who can create one**
     - **Any authenticated org member** — unlike OAuth apps, this is
       deliberately not admin-gated.
+
+    **Session only**
+    - Every `/personal-access-tokens/*` route requires the user's interactive
+      session JWT. OAuth access tokens and personal access tokens (`phpat_...`)
+      are rejected with `403`. `scopes` is capped at the instance's `MCP_SCOPES`,
+      not at the caller's own token, so a narrowly scoped token could otherwise
+      mint itself a full-scope, non-expiring PAT.
 
     **How it's issued**
     - Minted through the same OAuth access-token machinery as `/oauth2/token`,
@@ -147,6 +157,8 @@ tags:
     - `name`, `given_name`, `family_name` - Name information
 - name: Organizations
   description: Organization management operations
+- name: Artifacts
+  description: User-facing gallery of generated artifacts (preview, download, versions)
 - name: Knowledge Base
   description: Knowledge base management operations
 - name: Knowledge Hub
@@ -155,6 +167,16 @@ tags:
   description: Connector-related operations
 - name: Conversations
   description: AI-powered conversational chat management with citations and follow-up questions
+- name: Projects
+  description: |
+    Workspaces that group related assistant and agent conversations under a
+    shared name, custom instructions, a knowledge scope, and reference
+    files. Projects can be shared with teammates; project membership only
+    grants read access to conversations explicitly marked
+    `projectVisibility: project` — a member never gets access to another
+    member's private chats. See `Conversations` for the two fields
+    (`projectId`, `projectVisibility`) that link a conversation to a
+    project.
 - name: Semantic Search
   description: Enterprise semantic search across all indexed knowledge with relevance scoring
 - name: Agents
@@ -164,6 +186,15 @@ tags:
 - name: Web Search
   description: Manage web search providers (DuckDuckGo, Serper, Tavily, Exa) and settings for internet search.
 components:
+  headers:
+    X-Conversation-Id:
+      description: |
+        Id of the conversation this turn wrote to. Sent on success and on
+        failure, so a caller whose first turn failed can still fetch or
+        continue that conversation.
+      schema:
+        type: string
+        format: objectId
   securitySchemes:
     bearerAuth:
       type: http
@@ -223,6 +254,9 @@ components:
             conversation:read: Read conversations
             conversation:write: Create and manage conversations
             conversation:chat: Send messages in conversations
+            project:read: Read projects and their conversations
+            project:write: Create and manage projects
+            project:delete: Delete projects
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
@@ -263,6 +297,9 @@ components:
             conversation:read: Read conversations
             conversation:write: Create and manage conversations
             conversation:chat: Send messages in conversations
+            project:read: Read projects and their conversations
+            project:write: Create and manage projects
+            project:delete: Delete projects
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
@@ -275,6 +312,130 @@ components:
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
   schemas:
+    ArtifactGalleryItem:
+      type: object
+      additionalProperties: false
+      properties:
+        artifactId:
+          type: string
+        name:
+          type: string
+        logicalName:
+          type: string
+          nullable: true
+        artifactType:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+        contentHash:
+          type: string
+          nullable: true
+        conversationId:
+          type: string
+          nullable: true
+        conversationTitle:
+          type: string
+          description: Display-only chat title when the caller can see that conversation
+        createdAt:
+          type: integer
+          nullable: true
+        updatedAt:
+          type: integer
+          nullable: true
+      required:
+      - artifactId
+      - name
+      - artifactType
+      - version
+    ArtifactGalleryVersion:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+        sizeBytes:
+          type: integer
+        contentHash:
+          type: string
+        createdAt:
+          type: integer
+      required:
+      - version
+    ArtifactGalleryDetail:
+      type: object
+      additionalProperties: false
+      properties:
+        artifactId:
+          type: string
+        name:
+          type: string
+        logicalName:
+          type: string
+          nullable: true
+        artifactType:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+        contentHash:
+          type: string
+          nullable: true
+        conversationId:
+          type: string
+          nullable: true
+        conversationTitle:
+          type: string
+          description: Display-only chat title when the caller can see that conversation
+        createdAt:
+          type: integer
+          nullable: true
+        updatedAt:
+          type: integer
+          nullable: true
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactGalleryVersion'
+        description:
+          type: string
+        sourceTool:
+          type: string
+          nullable: true
+      required:
+      - artifactId
+      - name
+      - artifactType
+      - version
+    ArtifactGalleryListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactGalleryItem'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
     AuthMethod:
       type: object
       additionalProperties: false
@@ -520,7 +681,7 @@ components:
         - `microsoft`: `{ accessToken: "...", idToken: "..." }`
         - `azureAd`: `{ accessToken: "...", idToken: "..." }`
         - `oauth`: `{ accessToken: "...", idToken: "..." }`
-        - `samlSso`: handled via redirect flow
+        - `samlSso`: not accepted by `/userAccount/authenticate`, which answers `400`. SAML sign-in runs as a browser redirect: send the browser to `/saml/signIn` instead
       properties:
         method:
           type: string
@@ -685,12 +846,63 @@ components:
           type: string
         lastName:
           type: string
+        middleName:
+          type: string
+        mobile:
+          type: string
+          description: Mobile number (10-15 digits with optional +)
+          pattern: ^$|^\+?[0-9]{10,15}$
         designation:
           type: string
+        kind:
+          type: string
+          enum:
+          - human
+          - service
+          description: |
+            Whether this account is a person who signs in (`human`) or a
+            machine identity that automation authenticates as (`service`).
+            Absent on records written before service accounts existed, which
+            are all human.
+        description:
+          type: string
+          description: Free text explaining what a service account is for. Unused for people.
+        isDisabled:
+          type: boolean
+          default: false
+          description: |
+            The account is suspended: its tokens stop working and no session
+            can be issued, but the record, its group memberships and its
+            permission-graph node survive so it can be switched back on.
+        restoreOpId:
+          type: string
+          description: |
+            Internal and transient. Present only while a deleted service
+            account is being brought back, and cleared when that finishes
+            either way. It lets the steps that complete or undo a restore tell
+            their own attempt from a later one. Not something to depend on.
+        role:
+          type: string
+          enum:
+          - admin
+          - member
+          description: Organization role stored on the user document (`admin` or `member`)
+        address:
+          $ref: '#/components/schemas/Address'
+        dataCollectionConsent:
+          type: boolean
+          description: Whether user has consented to data collection
         hasLoggedIn:
           type: boolean
         isDeleted:
           type: boolean
+        deletedBy:
+          type: string
+          description: ID of user who deleted this user
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the user's display picture
         slug:
           type: string
         createdAt:
@@ -749,16 +961,21 @@ components:
           - code
           - message
           properties:
+            requestId:
+              type: string
+              description: |
+                Identifier for this request, echoed so a bug report can quote it.
+                Absent when the request never reached the middleware that assigns one.
             code:
               type: string
               description: |
                 Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`
                 For unhandled runtime errors (e.g. database unavailable) it is `INTERNAL_ERROR`.
-              example: HTTP_BAD_REQUEST
+              example: HTTP_FORBIDDEN
             message:
               type: string
               description: Human-readable description of the error
-              example: Admin access required
+              example: You need admin access to do this. Ask an admin in your organisation.
             metadata:
               type: object
               description: Additional context (only present in development environments)
@@ -1459,6 +1676,24 @@ components:
               type: object
               description: Optional; may appear in non-production for some errors.
               additionalProperties: true
+    RateLimitErrorResponse:
+      type: object
+      description: Rate-limit error payload (shape differs from standard error responses).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Error code.
+            message:
+              type: string
+            retryAfter:
+              type: integer
+              nullable: true
+              description: Suggested seconds to wait before retrying.
+      required:
+      - error
     OAuthTokenListItem:
       type: object
       description: |
@@ -2251,6 +2486,7 @@ components:
       - OUTLOOK CALENDAR
       - MICROSOFT TEAMS
       - NOTION
+      - NOTION PERSONAL
       - SLACK
       - SLACK WORKSPACE
       - KB
@@ -2267,7 +2503,9 @@ components:
       - DROPBOX PERSONAL
       - WEB
       - BOOKSTACK
+      - DRUPAL WIKI
       - GITHUB
+      - GITHUB TEAMS
       - SERVICENOW
       - SALESFORCE
       - S3
@@ -2374,6 +2612,11 @@ components:
           format: int64
           nullable: true
           description: Epoch ms when parse/index processing began for the current attempt; null when idle
+        queuedAtTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms the platform last queued this record for indexing; absent until first queued. Platform-owned, unlike updatedAtTimestamp
         parsingStatus:
           type: string
           enum:
@@ -2576,6 +2819,14 @@ components:
             recordGroupId:
               type: string
               nullable: true
+            rootRecordGroupId:
+              type: string
+              nullable: true
+              description: |
+                Internal identifier of the top-most record group in this record's
+                chain. A group with no parent is its own root, so this is null
+                only for records written before the field existed, or by
+                connectors that do not set it.
             connectorId:
               type: string
             connectorName:
@@ -2612,6 +2863,10 @@ components:
               type: integer
               format: int64
             processingStartedAt:
+              type: integer
+              format: int64
+              nullable: true
+            queuedAtTimestamp:
               type: integer
               format: int64
               nullable: true
@@ -3203,6 +3458,303 @@ components:
           type: integer
           format: int64
           nullable: true
+        softDeleted:
+          type: boolean
+          description: True when the record went to the trash instead of being removed
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch; restoring any record in it restores all of it
+        vectorCleanupPending:
+          type: boolean
+          description: The record is deleted, but removing its embeddings is still owed
+        vectorCleanupFailedRecordIds:
+          type: array
+          items:
+            type: string
+        vectorCleanupFailedVirtualRecordIds:
+          type: array
+          items:
+            type: string
+    RestoredRecordSchema:
+      type: object
+      additionalProperties: false
+      required:
+      - recordId
+      properties:
+        recordId:
+          type: string
+        name:
+          type: string
+          nullable: true
+          description: The name it has now
+        renamedFrom:
+          type: string
+          description: Its name before restore, when another item next to it had taken that name
+    RestoreRecordResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/record/{recordId}/restore.
+      required:
+      - success
+      - message
+      - restoredRecords
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch that was restored
+        restoredRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestoredRecordSchema'
+        reindexPending:
+          type: boolean
+          description: Some restored files could not be queued for indexing
+        reindexPendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Files to reindex by hand to make them searchable again
+        reindexPendingReason:
+          type: string
+        renamePendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Items restored under a name another item next to them has; rename them
+        renamePendingReason:
+          type: string
+    TrashItemSchema:
+      type: object
+      additionalProperties: false
+      description: What one delete removed (a folder with its contents, or every item of a multi-select); restoring it brings back all of it.
+      required:
+      - id
+      - isFolder
+      - parentInTrash
+      - itemCount
+      - deletedAtTimestamp
+      properties:
+        id:
+          type: string
+          description: Record ID to restore
+        name:
+          type: string
+          nullable: true
+        recordType:
+          type: string
+          nullable: true
+        isFolder:
+          type: boolean
+          description: A folder, deleted with everything in it
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          format: int64
+          nullable: true
+        parentId:
+          type: string
+          nullable: true
+          description: The folder it was in; null at the collection's top level
+        parentName:
+          type: string
+          nullable: true
+        parentInTrash:
+          type: boolean
+          description: That folder is in the trash too; restore it first
+        itemCount:
+          type: integer
+          minimum: 0
+          description: Records this delete removed, all of which a restore brings back
+        rootCount:
+          type: integer
+          minimum: 1
+          description: Items selected in the delete; more than one for a multi-select delete, which is one item here
+        otherRootNames:
+          type: array
+          items:
+            type: string
+          description: Names of up to three of the other items selected with this one
+        deletedAtTimestamp:
+          type: integer
+          format: int64
+        deletedBy:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+        removableAfterTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: From when the scheduled cleanup may remove it for good; null when unknown
+    ListTrashResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase/{kbId}/trash.
+      required:
+      - success
+      - items
+      - pagination
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrashItemSchema'
+        pagination:
+          type: object
+          additionalProperties: false
+          required:
+          - page
+          - limit
+          - totalCount
+          - totalPages
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
+        retention:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required:
+          - minAgeMs
+          properties:
+            minAgeMs:
+              type: integer
+              format: int64
+              description: Items stay at least this long before the cleanup may remove them
+    RestoreRecordsRequestBody:
+      type: object
+      additionalProperties: false
+      required:
+      - recordIds
+      properties:
+        recordIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            minLength: 1
+    RestoreRecordsResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/records/restore.
+      required:
+      - success
+      - restoredCount
+      - failedCount
+      - results
+      properties:
+        success:
+          type: boolean
+          description: True when every requested record was restored
+        restoredCount:
+          type: integer
+          description: Records restored, counting those restored along with them
+        failedCount:
+          type: integer
+        results:
+          type: array
+          description: |
+            One entry per requested id: `recordId`, `success`, `code`, and either the
+            restore response fields or a `reason` that says what to do next.
+          items:
+            $ref: '#/components/schemas/RestoreRecordsResultItemSchema'
+    RestoreRecordsResultItemSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        The outcome for one id of POST /knowledgeBase/records/restore. A restored item
+        carries the fields of RestoreRecordResponseSchema; a refused one carries `reason`,
+        and, when the refusal names other records, `blockedRecordId` plus the snake_case
+        fields below (`external_id`, `conflicting_record_id`, `conflicting_record_name`).
+      required:
+      - recordId
+      - success
+      properties:
+        recordId:
+          type: string
+        success:
+          type: boolean
+        code:
+          type: integer
+        reason:
+          type: string
+          description: Why it was not restored, and what to do next
+        message:
+          type: string
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch that was restored
+        restoredRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestoredRecordSchema'
+        reindexPending:
+          type: boolean
+          description: Some restored files could not be queued for indexing
+        reindexPendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Files to reindex by hand to make them searchable again
+        reindexPendingReason:
+          type: string
+        renamePendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Items restored under a name another item next to them has; rename them
+        renamePendingReason:
+          type: string
+        blockedRecordId:
+          type: string
+          description: The item a refusal is about
+        external_id:
+          type: string
+          description: The source item two of the restored items came from
+        conflicting_record_id:
+          type: string
+          description: The live item that holds this item's place
+        conflicting_record_name:
+          type: string
+          nullable: true
+        missing:
+          type: array
+          items:
+            type: string
+          description: Items of the batch that were no longer in the trash
+        parentId:
+          type: string
+          nullable: true
+          description: The folder still in the trash that must be restored first
     reIndexRecordResponseSchema:
       type: object
       additionalProperties: false
@@ -3288,7 +3840,7 @@ components:
         These endpoints respond with `Content-Type: text/event-stream`: the upload
         and its per-file progress are a single request. The body streams one
         terminal event per file, then a final `done` summary, then closes. `data`
-        is a JSON-encoded string whose decoded shape depends on `event`:
+        is the decoded JSON object for the frame; its shape depends on `event`:
 
         - `file:succeeded` — see `UploadSucceededFileDetail`. The file was
           uploaded and its record created; content indexing then continues
@@ -3317,8 +3869,9 @@ components:
           - done
           - error
         data:
-          type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          type: object
+          additionalProperties: true
+          description: Decoded JSON payload. Shape depends on `event`.
     IndexingStatusFilter:
       type: string
       description: |
@@ -3434,6 +3987,7 @@ components:
       - parentId
       - origin
       - connector
+      - connectorId
       - recordType
       - recordGroupType
       - indexingStatus
@@ -3479,6 +4033,10 @@ components:
           type: string
           nullable: true
           description: Connector display name / key when applicable; otherwise `null`.
+        connectorId:
+          type: string
+          nullable: true
+          description: Connector instance id for records and groups that come from a connector; otherwise `null` (Collections, and app nodes).
         recordType:
           type: string
           nullable: true
@@ -3566,7 +4124,11 @@ components:
       - breadcrumbs
       - counts
       - permissions
+      - maxFolderDepth
       properties:
+        maxFolderDepth:
+          type: integer
+          description: Deepest a collection folder may be nested; a folder directly in the collection is depth 1.
         success:
           type: boolean
           enum:
@@ -3824,6 +4386,15 @@ components:
               type: boolean
             canManagePermissions:
               type: boolean
+            collectionRole:
+              type: string
+              nullable: true
+              description: |
+                The caller's own role on the collection (knowledge base) this node is in, as
+                restore and `GET /knowledgeBase/{kbId}/trash` check it: OWNER, WRITER,
+                FILEORGANIZER, COMMENTER or READER. Unlike `role`, which ranks record
+                permissions inside a folder, it is the same at every level of the collection.
+                Null outside a collection.
     AgentCapabilities:
       type: object
       additionalProperties: false
@@ -4044,20 +4615,43 @@ components:
           description: |
             Uploaded chat attachments to associate with this conversation turn (see
             `POST /conversations/attachments/upload`).
+        projectId:
+          type: string
+          format: objectId
+          description: |
+            Link the new conversation to a project the caller has at least
+            viewer access to. When the project's instructions, knowledge
+            scope, or files are set and this request didn't supply its own
+            `filters`/`attachments`, they are merged in as a fallback (the
+            request always wins). Ignored on follow-up turns — only
+            meaningful when creating a conversation.
+        projectVisibility:
+          type: string
+          enum:
+          - private
+          - project
+          description: |
+            Only meaningful together with `projectId`. Overrides the
+            project's default sharing behavior for this one conversation:
+            `private` keeps it visible to the owner only; `project` exposes
+            it to every project member. Defaults from the project's
+            `chatSharing` setting when omitted.
         modelKey:
           type: string
           description: |
             Identifier for the AI model configuration to use.
-            Available models depend on organization settings.
-          example: gpt-4-turbo
+            Available models depend on organization settings. When neither
+            `modelKey` nor `modelName` is sent, the organization's default
+            model answers and is saved in the conversation's `modelInfo`.
+          example: gpt-5.6-luna
         modelName:
           type: string
           description: Display name of the AI model
-          example: GPT-4 Turbo
+          example: gpt-5.6-luna
         modelFriendlyName:
           type: string
           description: Friendly display name of the selected model
-          example: GPT-4 Turbo
+          example: gpt-5.6-Luna
         chatMode:
           type: string
           enum:
@@ -4108,6 +4702,14 @@ components:
             that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /conversations/{conversationId}/cancel {runId}` while the
+            stream is still generating. Optional — a caller that never sends
+            one just can't cooperatively cancel the run.
     ConversationStreamRequest:
       allOf:
       - $ref: '#/components/schemas/CreateConversationRequest'
@@ -4117,16 +4719,85 @@ components:
           requires an explicit universal execution mode.
         required:
         - chatMode
-    AgentStreamCreateConversationRequest:
+    CreateAgentConversationResponse:
+      type: object
+      description: |
+        Envelope returned by `POST /agents/{agentKey}/conversations`: the
+        persisted agent conversation (initial user message plus the agent's
+        answer) and request metadata.
+      required:
+      - conversation
+      - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/AgentConversation'
+        meta:
+          type: object
+          required:
+          - timestamp
+          - duration
+          properties:
+            requestId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+            duration:
+              type: integer
+              minimum: 0
+    CreateConversationResponse:
       type: object
       additionalProperties: false
       description: |
-        Request body for `POST /agents/{agentKey}/conversations/stream`.
-        `query` and `chatMode: quick` are required; all other fields are
-        optional overrides. Unknown fields are stripped during validation.
+        Envelope returned by `POST /conversations/create`. Contains the
+        persisted conversation (including the initial user message and the AI
+        response) plus request metadata.
+      required:
+      - conversation
+      - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/Conversation'
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - timestamp
+          - duration
+          properties:
+            requestId:
+              type: string
+              description: |
+                Request correlation id. Omitted when upstream middleware did
+                not set a request id on the context.
+            timestamp:
+              type: string
+              format: date-time
+              description: Server timestamp when the response was sent.
+            duration:
+              type: integer
+              minimum: 0
+              description: Total handler duration in milliseconds.
+    AgentStreamCreateConversationRequest:
+      allOf:
+      - $ref: '#/components/schemas/AgentCreateConversationRequest'
+      - type: object
+        description: |
+          Request body for `POST /agents/{agentKey}/conversations/stream`.
+          `query` and `chatMode: quick` are required; all other fields are
+          optional overrides. Unknown fields are stripped during validation.
+        required:
+        - chatMode
+    AgentCreateConversationRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        First turn of an agent conversation. Used as-is by the non-streaming
+        `POST /agents/{agentKey}/conversations`, where `chatMode` may be
+        omitted; `AgentStreamCreateConversationRequest` additionally requires
+        it. Unknown fields are stripped during validation.
       required:
       - query
-      - chatMode
       properties:
         query:
           type: string
@@ -4163,13 +4834,30 @@ components:
           description: |
             Uploaded attachments to ground this turn. Each entry references a
             record id returned from the agent attachment upload endpoint.
+        projectId:
+          type: string
+          format: objectId
+          description: |
+            Link the new agent conversation to a project the caller has at
+            least viewer access to. Same fallback/merge semantics as
+            `POST /conversations/create`. Ignored on follow-up turns — the
+            session row is the source of truth once the conversation exists.
+        projectVisibility:
+          type: string
+          enum:
+          - private
+          - project
+          description: |
+            Only meaningful together with `projectId`. Overrides the
+            project's default sharing behavior for this one conversation.
         chatMode:
           type: string
           enum:
           - quick
           description: |
-            Required execution mode. Scoped agent conversations currently
-            support only `quick`.
+            Execution mode. Scoped agent conversations support only `quick`.
+            Required on the `/stream` route; optional on the non-streaming
+            route.
         modelKey:
           type: string
           minLength: 1
@@ -4217,10 +4905,17 @@ components:
             send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /agents/{agentKey}/conversations/{conversationId}/cancel
+            {runId}` while the stream is still generating.
       example:
         query: what are some latest tech news?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
-        modelName: gpt-5.4-mini
+        modelName: gpt-5.6-luna
         modelFriendlyName: GPT 5.4 mini
         chatMode: quick
         timezone: Asia/Kolkata
@@ -4287,7 +4982,7 @@ components:
           type: string
           minLength: 1
           description: Provider model name (e.g. the underlying LLM identifier).
-          example: gpt-5.4-mini
+          example: gpt-5.6-luna
         modelFriendlyName:
           type: string
           minLength: 1
@@ -4337,6 +5032,13 @@ components:
             compatibility with callers that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this regeneration run. Send it
+            here to enable `POST .../cancel {runId}` while it is still
+            generating.
     AgentRegenerateRequest:
       allOf:
       - $ref: '#/components/schemas/RegenerateRequest'
@@ -4361,7 +5063,10 @@ components:
         query:
           type: string
           minLength: 1
-          description: The follow-up question or message content
+          maxLength: 100000
+          description: |
+            The follow-up question or message content. Held to the same
+            100,000-character limit as the first message of a conversation.
           example: Can you elaborate on the revenue trends?
         filters:
           $ref: '#/components/schemas/Filters'
@@ -4376,7 +5081,10 @@ components:
             `POST /conversations/attachments/upload`).
         modelKey:
           type: string
-          description: Override the model for this specific message
+          description: |
+            Override the model for this specific message. When neither
+            `modelKey` nor `modelName` is sent, the organization's default
+            model answers and is saved in the message's `modelInfo`.
         modelName:
           type: string
           description: Display name of the model
@@ -4429,6 +5137,13 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /conversations/{conversationId}/cancel {runId}` while the
+            stream is still generating.
     ConversationMessageStreamRequest:
       allOf:
       - $ref: '#/components/schemas/AddMessageRequest'
@@ -4439,20 +5154,77 @@ components:
           stream requires an explicit universal execution mode.
         required:
         - chatMode
-    AgentAddMessageStreamRequest:
+    AddMessageResponse:
       type: object
       additionalProperties: false
       description: |
-        Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        `query` and `chatMode: quick` are required; all other fields are
-        optional overrides. Unknown fields are stripped during validation.
+        Envelope returned by `POST /conversations/{conversationId}/messages`.
+        Contains the updated conversation, the number of citation records used
+        to ground the AI response for this turn, and request metadata.
+      required:
+      - conversation
+      - recordsUsed
+      - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/Conversation'
+        recordsUsed:
+          type: integer
+          minimum: 0
+          description: |
+            Number of citation records used to ground the AI response generated
+            for this turn.
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - timestamp
+          - duration
+          properties:
+            requestId:
+              type: string
+              description: |
+                Request correlation id. Omitted when upstream middleware did
+                not set `req.context.requestId`.
+            timestamp:
+              type: string
+              format: date-time
+              description: Server timestamp when the response was sent.
+            duration:
+              type: integer
+              minimum: 0
+              description: Total handler duration in milliseconds.
+            recordsUsed:
+              type: integer
+              minimum: 0
+              description: |
+                Same value as the top-level `recordsUsed`. Duplicated inside
+                `meta` for client convenience.
+    AgentAddMessageStreamRequest:
+      allOf:
+      - $ref: '#/components/schemas/AgentAddMessageRequest'
+      - type: object
+        description: |
+          Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
+          `query` and `chatMode: quick` are required; all other fields are
+          optional overrides. Unknown fields are stripped during validation.
+        required:
+        - chatMode
+    AgentAddMessageRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Follow-up turn on an agent conversation. Used as-is by the
+        non-streaming `POST /agents/{agentKey}/conversations/{conversationId}/messages`,
+        where `chatMode` may be omitted; `AgentAddMessageStreamRequest`
+        additionally requires it. Unknown fields are stripped during validation.
       required:
       - query
-      - chatMode
       properties:
         query:
           type: string
           minLength: 1
+          maxLength: 100000
           description: |
             User follow-up prompt to append to the existing agent conversation.
             Saved as a new `user_query` message before the upstream AI stream
@@ -4482,8 +5254,9 @@ components:
           enum:
           - quick
           description: |
-            Required execution mode. Scoped agent conversations currently
-            support only `quick`.
+            Execution mode. Scoped agent conversations support only `quick`.
+            Required on the `/stream` route; optional on the non-streaming
+            route.
         modelKey:
           type: string
           minLength: 1
@@ -4531,10 +5304,17 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        runId:
+          type: string
+          format: uuid
+          description: |
+            Client-generated identifier for this run. Send it here to enable
+            `POST /agents/{agentKey}/conversations/{conversationId}/cancel
+            {runId}` while the stream is still generating.
       example:
         query: can you elaborate on the latest headlines?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
-        modelName: gpt-5.4-mini
+        modelName: gpt-5.6-luna
         modelFriendlyName: GPT 5.4 mini
         chatMode: quick
         timezone: Asia/Kolkata
@@ -4689,8 +5469,13 @@ components:
         citations:
           type: array
           items:
-            $ref: '#/components/schemas/CitationReference'
-          description: References to source documents used in the response
+            anyOf:
+            - $ref: '#/components/schemas/CitationReference'
+            - $ref: '#/components/schemas/PopulatedCitationReference'
+          description: |
+            References to source documents used in the response. Routes that
+            return the saved conversation after a turn (create, add message)
+            populate each item to `{ citationId, citationData }`.
         confidence:
           type: string
           nullable: true
@@ -4810,6 +5595,31 @@ components:
         context:
           type: string
           description: Additional context around the citation
+    PopulatedCitationReference:
+      type: object
+      additionalProperties: false
+      description: |
+        A message's citation reference after the handler populates it: the
+        stored reference fields, with `citationId` as the id and the cited
+        document under `citationData`.
+      properties:
+        citationId:
+          type: string
+          format: objectId
+          description: ID of the citation record
+        relevanceScore:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: How relevant this citation is to the query (0-1)
+        excerpt:
+          type: string
+          description: Relevant excerpt from the source document
+        context:
+          type: string
+          description: Additional context around the citation
+        citationData:
+          $ref: '#/components/schemas/Citation'
     Citation:
       type: object
       additionalProperties: false
@@ -4856,7 +5666,7 @@ components:
           description: Stable identifier of the configured model record
         modelName:
           type: string
-          description: Provider-facing model name (e.g. `gpt-4o-mini`)
+          description: Provider-facing model name (e.g. `gpt-5.6-luna`)
         modelProvider:
           type: string
           description: Provider key (e.g. `openai`, `anthropic`)
@@ -5225,12 +6035,15 @@ components:
           - Inprogress
           - Complete
           - Failed
+          - Stopped
           description: |
             Current status of the conversation:
             - `None` — no activity yet
             - `Inprogress` — AI is processing
             - `Complete` — response ready
             - `Failed` — error occurred
+            - `Stopped` — cancelled, or the client disconnected mid-answer;
+              the last message keeps the partial answer
         failReason:
           type: string
           description: Error description, populated only when `status` is `Failed`.
@@ -5341,6 +6154,43 @@ components:
             Computed per request. The requester's effective access level:
             their entry in `sharedWith`, or `read` by default.
           readOnly: true
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: |
+            The project this conversation is linked to, if any. Set via
+            `PUT /conversations/{conversationId}/project` or at creation
+            time; absent on conversations that were never linked.
+        projectVisibility:
+          type: string
+          enum:
+          - private
+          - project
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `private` (default)
+            keeps the conversation visible to its owner only; `project`
+            exposes it to every member of the linked project. See
+            `PATCH /conversations/{conversationId}/project-visibility`.
+        sharedBy:
+          $ref: '#/components/schemas/ConversationSharedBy'
+    ConversationSharedBy:
+      type: object
+      additionalProperties: false
+      description: |
+        Present on conversations the caller received via share. Identifies the
+        conversation initiator (the only user who can share a chat).
+      required:
+      - userId
+      - name
+      properties:
+        userId:
+          type: string
+          format: objectId
+        name:
+          type: string
+          description: Display name, falling back to email or the user id
     ConversationListItem:
       type: object
       description: |
@@ -5369,6 +6219,7 @@ components:
           - Inprogress
           - Complete
           - Failed
+          - Stopped
         failReason:
           type: string
         modelInfo:
@@ -5456,6 +6307,337 @@ components:
           - read
           - write
           readOnly: true
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: |
+            The project this conversation is linked to, if any. Set via
+            `PUT /conversations/{conversationId}/project` or at creation
+            time; absent on conversations that were never linked.
+        projectVisibility:
+          type: string
+          enum:
+          - private
+          - project
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `private` (default)
+            keeps the conversation visible to its owner only; `project`
+            exposes it to every member of the linked project. See
+            `PATCH /conversations/{conversationId}/project-visibility`.
+        sharedBy:
+          $ref: '#/components/schemas/ConversationSharedBy'
+    ProjectKnowledgeScope:
+      type: object
+      additionalProperties: false
+      description: |
+        Retrieval scope (app connector / knowledge-base ids) inherited by
+        every conversation in the project when the request itself carries no
+        `filters`. Same id shapes as `Filters`.
+      properties:
+        apps:
+          type: array
+          items:
+            type: string
+          description: Connector instance ids scoping this project's default retrieval.
+        kb:
+          type: array
+          items:
+            type: string
+          description: Knowledge-base app ids scoping this project's default retrieval.
+    ProjectAppliedFilters:
+      type: object
+      additionalProperties: false
+      description: Display-friendly mirror of `knowledgeScope`, for rendering scope chips without a round trip.
+      properties:
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+        kb:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+    ProjectMember:
+      type: object
+      additionalProperties: false
+      required:
+      - principalType
+      - principalId
+      - role
+      - addedBy
+      - addedAt
+      properties:
+        principalType:
+          type: string
+          enum:
+          - user
+          - team
+          description: Whether `principalId` names a user or a team. Both grant the same `role`, mirroring Collection sharing.
+        principalId:
+          type: string
+          format: objectId
+          description: User or team id of the member. The project owner is implicit and never appears in this list.
+        role:
+          type: string
+          enum:
+          - viewer
+          - editor
+          description: |
+            `viewer` can read the project and its `project`-visible
+            conversations. `editor` can additionally update project
+            metadata, instructions, scope, tools, and files. Only the owner
+            can manage members or change `visibility`/`chatSharing`.
+        addedBy:
+          type: string
+          format: objectId
+        addedAt:
+          type: string
+          format: date-time
+    Project:
+      type: object
+      description: |
+        A workspace that groups related assistant and agent conversations
+        under a shared name, instructions, knowledge scope, tool
+        selection, and its own hidden Collection of uploaded files. See
+        the `Projects` tag description for the sharing model.
+      properties:
+        _id:
+          type: string
+          format: objectId
+        orgId:
+          type: string
+          format: objectId
+        userId:
+          type: string
+          format: objectId
+          description: Owner. Ownership never transfers.
+        name:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 1000
+        icon:
+          type: string
+        color:
+          type: string
+        instructions:
+          type: string
+          maxLength: 8000
+          description: |
+            Injected into every conversation in this project as a dedicated,
+            author-attributed `project_instructions` prompt section — additive,
+            never overrides agent identity or system prompts.
+        knowledgeScope:
+          $ref: '#/components/schemas/ProjectKnowledgeScope'
+        appliedFilters:
+          $ref: '#/components/schemas/ProjectAppliedFilters'
+        tools:
+          type: array
+          items:
+            type: string
+          description: |
+            Tool fullNames (toolset + MCP tools, same format as the
+            composer's `agentStreamTools`) this project's agent-mode chats
+            may use. Empty means no tools beyond the project's own files.
+        linkedKnowledgeBaseId:
+          type: string
+          nullable: true
+          readOnly: true
+          description: |
+            Id of the hidden Collection holding this project's uploaded
+            files, created lazily on first upload via
+            `POST /projects/{projectId}/knowledge-base`. `null` until then.
+        visibility:
+          type: string
+          enum:
+          - private
+          - org
+          default: private
+          description: |
+            `org` makes the project (and, per `chatSharing`, its
+            `project`-visible conversations) readable by every member of the
+            organization, without adding them to `members[]`. Also grants
+            the organization's synthetic all-members team `READER` access
+            on the linked hidden Collection.
+        chatSharing:
+          type: string
+          enum:
+          - private
+          - members
+          default: private
+          description: |
+            Owner-controlled default for new conversations created in this
+            project. `private` keeps new chats visible to their own owner
+            only; `members` exposes them to every project member
+            (`projectVisibility: project`). A conversation's own
+            `projectVisibility` can override this default per-chat.
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectMember'
+        isPinned:
+          type: boolean
+          default: false
+          description: Owner-scoped pin state in V1 (not per-viewer).
+        isArchived:
+          type: boolean
+          default: false
+        archivedBy:
+          type: string
+          format: objectId
+          nullable: true
+        isDeleted:
+          type: boolean
+          default: false
+        deletedBy:
+          type: string
+          format: objectId
+          nullable: true
+        lastActivityAt:
+          type: integer
+          format: int64
+          description: Epoch milliseconds, bumped whenever a linked conversation streams a turn.
+        metadata:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ProjectListItem:
+      allOf:
+      - $ref: '#/components/schemas/Project'
+      - type: object
+        description: Project summary returned by `GET /projects`, enriched with request-computed fields.
+        properties:
+          role:
+            type: string
+            enum:
+            - owner
+            - editor
+            - viewer
+            readOnly: true
+            description: |
+              Caller's effective role on this project (owner, explicit
+              member role, or `viewer` via `visibility: org`).
+          conversationCount:
+            type: integer
+            minimum: 0
+            readOnly: true
+            description: Count of non-deleted conversations (chat + agent) linked to this project.
+    CreateProjectRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 1000
+        icon:
+          type: string
+          maxLength: 100
+        color:
+          type: string
+          maxLength: 50
+        instructions:
+          type: string
+          maxLength: 8000
+        knowledgeScope:
+          $ref: '#/components/schemas/ProjectKnowledgeScope'
+        appliedFilters:
+          $ref: '#/components/schemas/ProjectAppliedFilters'
+        tools:
+          type: array
+          items:
+            type: string
+          maxItems: 200
+    UpdateProjectRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        All fields optional; only supplied fields are updated.
+        `visibility`/`chatSharing` are owner-only — an editor who is not
+        the owner gets `403` if they include either field. Flattened (not
+        `allOf: [CreateProjectRequest, ...]`) since `CreateProjectRequest`
+        itself is `additionalProperties: false` — composing two closed
+        schemas would reject `visibility`/`chatSharing` on every real update.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 1000
+        icon:
+          type: string
+          maxLength: 100
+        color:
+          type: string
+          maxLength: 50
+        instructions:
+          type: string
+          maxLength: 8000
+        knowledgeScope:
+          $ref: '#/components/schemas/ProjectKnowledgeScope'
+        appliedFilters:
+          $ref: '#/components/schemas/ProjectAppliedFilters'
+        tools:
+          type: array
+          items:
+            type: string
+          maxItems: 200
+        visibility:
+          type: string
+          enum:
+          - private
+          - org
+        chatSharing:
+          type: string
+          enum:
+          - private
+          - members
+    ProjectMembersUpsertRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - members
+      properties:
+        members:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - principalId
+            - role
+            properties:
+              principalId:
+                type: string
+                format: objectId
+                description: |
+                  User id to add or update. Must exist in this org's IAM
+                  service (validated the same way as
+                  `POST /conversations/{conversationId}/share`).
+              role:
+                type: string
+                enum:
+                - viewer
+                - editor
+          description: |
+            Upserted by `principalId`: existing members get their `role`
+            updated, new ids are added. The project owner is silently
+            skipped if included (ownership is implicit).
     SemanticSearchRequest:
       type: object
       description: |
@@ -5585,6 +6767,10 @@ components:
           nullable: true
         hideWeburl:
           type: boolean
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
           nullable: true
         categories:
           type: array
@@ -5778,6 +6964,9 @@ components:
           type: string
           nullable: true
         processingStartedAt:
+          type: number
+          nullable: true
+        queuedAtTimestamp:
           type: number
           nullable: true
         parsingStatus:
@@ -5975,6 +7164,13 @@ components:
         connector:
           type: string
           nullable: true
+        connectorId:
+          type: string
+          nullable: true
+          description: |
+            The connector instance the record came from. `connector` names only
+            the kind of source (for example `SLACK`), which several instances can
+            share. Absent on citations saved before this field was stored.
         recordType:
           type: string
           nullable: true
@@ -6773,7 +7969,7 @@ components:
         status:
           type: string
           nullable: true
-          description: Lifecycle state of the skill — `active` or `deprecated`.
+          description: Lifecycle state of the skill — `active`, `deprecated`, or `disabled`. `candidate` is a learning-loop record state, not an assignable skill, and is not returned here.
     Agent:
       type: object
       additionalProperties: false
@@ -6821,7 +8017,7 @@ components:
           example:
           - modelType: llm
             provider: azureOpenAI
-            modelName: gpt-5.4-mini
+            modelName: gpt-5.6-luna
             modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
             isMultimodal: true
             isReasoning: true
@@ -6853,6 +8049,16 @@ components:
                   example: llm
                 modelFriendlyName:
                   type: string
+                defaultReasoningEffort:
+                  type: string
+                  enum:
+                  - none
+                  - low
+                  - medium
+                  - high
+                  - max
+                  description: The model's own reasoning effort, read from its stored configuration. It applies only when the chat request sets no `reasoningEffort` and the agent has no `defaultReasoningEffort`. Omitted when nothing valid is stored; `none` is a legacy value that runs as `low`.
+                  example: low
         usesOrgDefault:
           type: boolean
           description: |
@@ -6915,6 +8121,12 @@ components:
           - high
           - max
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        sendUserContext:
+          type: boolean
+          description: |
+            When true (default), the agent's system prompt includes the current
+            user's name, email, and organization. When false, the agent relies
+            on tools, actions, and knowledge sources without that profile data.
         tags:
           type: array
           items:
@@ -7098,6 +8310,9 @@ components:
           - high
           - max
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        sendUserContext:
+          type: boolean
+          description: When false, this agent omits user name/email/org from its system prompt.
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the organization.
@@ -7353,10 +8568,11 @@ components:
             items: {}
     AgentCreateWebSearch:
       description: |
-        Web-search attachment for an agent. Accepts either a provider string
-        or an object with at least a `provider` field.
+        Web-search attachment for an agent. Accepts a provider string, an object
+        with at least a `provider` field, or `null`.
       anyOf:
       - type: string
+        nullable: true
       - type: object
         additionalProperties: false
         properties:
@@ -7373,7 +8589,6 @@ components:
             maxLength: 500
         required:
         - provider
-      - type: 'null'
     AgentSkillAssignment:
       type: object
       additionalProperties: false
@@ -7472,6 +8687,13 @@ components:
           - high
           - max
           description: Agent-level reasoning effort used when a chat request omits its own.
+        sendUserContext:
+          type: boolean
+          default: true
+          description: |
+            When true (default), include the current user's name, email, and
+            organization in this agent's system prompt. When false, omit that
+            profile data.
     AgentCreateWarning:
       type: object
       additionalProperties: false
@@ -7628,6 +8850,7 @@ components:
         webSearch:
           anyOf:
           - type: object
+            nullable: true
             additionalProperties: false
             properties:
               provider:
@@ -7636,7 +8859,6 @@ components:
                 type: string
               providerLabel:
                 type: string
-          - type: 'null'
         defaultReasoningEffort:
           type: string
           nullable: true
@@ -7647,6 +8869,9 @@ components:
           - high
           - max
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        sendUserContext:
+          type: boolean
+          description: When false, this agent omits user name/email/org from its system prompt.
         isActive:
           type: boolean
         isServiceAccount:
@@ -7696,11 +8921,10 @@ components:
         agent:
           $ref: '#/components/schemas/AgentCreateResponseAgent'
         warnings:
-          anyOf:
-          - type: array
-            items:
-              $ref: '#/components/schemas/AgentCreateWarning'
-          - type: 'null'
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/AgentCreateWarning'
     AgentUpdateRequest:
       type: object
       additionalProperties: false
@@ -7793,6 +9017,12 @@ components:
           - high
           - max
           description: Agent-level reasoning effort used when a chat request omits its own.
+        sendUserContext:
+          type: boolean
+          description: |
+            When true (default), include the current user's name, email, and
+            organization in this agent's system prompt. When false, omit that
+            profile data.
     AgentUpdateResponse:
       type: object
       additionalProperties: false
@@ -7852,6 +9082,75 @@ components:
               type: integer
               minimum: 0
               example: 0
+    AgentConversation:
+      type: object
+      description: |
+        A conversation with a specific AI agent. Similar to regular conversations
+        but tied to an agent's configuration and capabilities.
+      properties:
+        _id:
+          type: string
+          format: objectId
+        agentKey:
+          type: string
+          description: The agent this conversation is with
+        userId:
+          type: string
+          format: objectId
+        orgId:
+          type: string
+          format: objectId
+        title:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        status:
+          type: string
+          enum:
+          - None
+          - Inprogress
+          - Complete
+          - Failed
+          - Stopped
+          description: Same values as `Conversation.status`.
+        isShared:
+          type: boolean
+        sharedWith:
+          type: array
+          items:
+            type: object
+            properties:
+              userId:
+                type: string
+              accessLevel:
+                type: string
+                enum:
+                - read
+                - write
+        lastActivityAt:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: The project this agent conversation is linked to, if any.
+        projectVisibility:
+          type: string
+          enum:
+          - private
+          - project
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `project` exposes the
+            conversation to every member of the linked project.
     AgentConversationListItem:
       type: object
       additionalProperties: false
@@ -7885,6 +9184,7 @@ components:
           - Inprogress
           - Complete
           - Failed
+          - Stopped
         failReason:
           type: string
         modelInfo:
@@ -7975,6 +9275,20 @@ components:
           description: |
             Computed per request from `sharedWith`; defaults to `read` when no
             explicit share grant is attached to the serialized row.
+        projectId:
+          type: string
+          format: objectId
+          nullable: true
+          description: The project this agent conversation is linked to, if any.
+        projectVisibility:
+          type: string
+          enum:
+          - private
+          - project
+          nullable: true
+          description: |
+            Only meaningful when `projectId` is set. `project` exposes the
+            conversation to every member of the linked project.
     AgentConversationListResponse:
       type: object
       additionalProperties: false
@@ -8148,6 +9462,7 @@ components:
           - Inprogress
           - Complete
           - Failed
+          - Stopped
         failReason:
           type: string
         modelInfo:
@@ -8249,8 +9564,12 @@ components:
           enum:
           - Conversation deleted successfully
         conversation:
-          nullable: true
-          $ref: '#/components/schemas/StoredAgentConversation'
+          anyOf:
+          - $ref: '#/components/schemas/StoredAgentConversation'
+          - type: object
+            nullable: true
+            enum:
+            - null
     AgentConversationDetailMessageCitation:
       type: object
       additionalProperties: false
@@ -8496,6 +9815,7 @@ components:
           - Inprogress
           - Complete
           - Failed
+          - Stopped
         failReason:
           type: string
         messages:
@@ -8685,9 +10005,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     SSEEvent:
@@ -8696,8 +10017,8 @@ components:
         Server-Sent Event envelope for streaming chat responses. AG-UI is
         the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. Stable gateway-generated top-level outcomes:
 
         - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
@@ -8735,9 +10056,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     ConversationStreamSSEEvent:
@@ -8747,8 +10069,8 @@ components:
         `agent`, `internal_search`, or `web_search`. AG-UI is the sole wire
         protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. Universal `agent` mode may emit `STEP_STARTED`,
         `STEP_FINISHED`, and nested child-run events carrying `parentRunId`.
         Stable gateway-generated top-level outcomes:
@@ -8795,9 +10117,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`. Forwarded lifecycle events may carry `runId`,
             `threadId`, and `parentRunId`.
@@ -8808,8 +10131,8 @@ components:
         `internal_search`, or `web_search` on an existing conversation. AG-UI
         is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. Universal `agent` mode may emit step and nested
         child-run events. Stable gateway-generated top-level outcomes:
 
@@ -8855,9 +10178,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`. Forwarded lifecycle events may carry `runId`,
             `threadId`, and `parentRunId`.
@@ -8867,8 +10191,8 @@ components:
         SSE event envelope for `POST /agents/{agentKey}/conversations/stream`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. The public route requires `chatMode: quick`.
         Forwarded lifecycle events may carry `runId`, `threadId`, and
         `parentRunId`; gateway-generated root terminal events do not.
@@ -8903,9 +10227,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     AgentMessageStreamSSEEvent:
@@ -8914,8 +10239,8 @@ components:
         Server-Sent Event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. The public route requires `chatMode: quick`.
         Forwarded lifecycle events may carry `runId`, `threadId`, and
         `parentRunId`. Stable gateway-generated top-level outcomes:
@@ -8960,9 +10285,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     ModelType:
@@ -9064,7 +10390,7 @@ paths:
         **Grant Types:**
         - `authorization_code`: Exchange auth code for tokens (user-based)
         - `client_credentials`: Get tokens for machine-to-machine auth
-        - `refresh_token`: Get new access token using refresh token
+        - `refresh_token`: Get new access token using refresh token. The refresh token must have been issued to the presenting `client_id`; one issued to another client is rejected with `400 invalid_grant` and is left untouched (not rotated, not revoked).
 
         For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
 
@@ -9330,7 +10656,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to list OAuth apps
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
           content:
             application/json:
               schema:
@@ -9383,7 +10709,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to create OAuth apps
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
           content:
             application/json:
               schema:
@@ -9439,6 +10765,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded for OAuth client management routes
           content:
@@ -9484,7 +10816,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -9551,7 +10883,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -9605,7 +10937,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -9658,7 +10990,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -9717,7 +11049,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -9776,7 +11108,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -9829,7 +11161,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -9889,7 +11221,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -9959,6 +11291,11 @@ paths:
         env var, not the full role-aware OAuth-app scope catalog — a
         non-admin can request any scope in that set.
 
+        **Session only.** The bearer token must be the user's interactive
+        session JWT. OAuth access tokens and personal access tokens
+        (`phpat_...`) are rejected with `403`, so a token that is already
+        issued cannot mint another with wider scopes or a longer life.
+
         The response's `accessToken` is shown **once**; only its SHA-256
         hash is stored. It's prefixed `phpat_` (see the `bearerAuth`
         security scheme).
@@ -9987,6 +11324,12 @@ paths:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Bearer token is an OAuth access token or personal access token rather than a user session
           content:
             application/json:
               schema:
@@ -10098,9 +11441,9 @@ paths:
         compromised laptop, where only the token's own creator could
         otherwise see or revoke it.
 
-        Requires org-admin privileges (`userAdminCheck`) — note this returns
-        **`400`**, not `403`, for a non-admin caller (shared middleware
-        behavior across the codebase, not specific to this route).
+        Requires org-admin privileges (`userAdminCheck`): a non-admin caller
+        gets `403` (`ForbiddenError`, message
+        "You need admin access to do this. Ask an admin in your organisation.").
       operationId: adminListPersonalAccessTokens
       security:
       - bearerAuth: []
@@ -10128,13 +11471,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/AdminPatListResponse'
         '400':
-          description: Invalid query parameters, or the caller is not an org admin
+          description: Invalid query parameters
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -10154,8 +11503,8 @@ paths:
         Revokes a token by id, scoped to the org's PAT client but **not** to
         a specific owning user — the admin counterpart to
         `DELETE /personal-access-tokens/{tokenId}`. Requires org-admin
-        privileges (`userAdminCheck`); returns `400` (not `403`) for a
-        non-admin caller, same as `GET /personal-access-tokens/admin`.
+        privileges (`userAdminCheck`); a non-admin caller gets `403`
+        (`ForbiddenError`), same as `GET /personal-access-tokens/admin`.
       operationId: adminRevokePersonalAccessToken
       security:
       - bearerAuth: []
@@ -10182,13 +11531,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/RevokePatResponse'
         '400':
-          description: Invalid token ID, or the caller is not an org admin
+          description: Invalid token ID
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -10266,6 +11621,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -10289,7 +11650,8 @@ paths:
         - `microsoft`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
         - `azureAd`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
         - `oauth`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
-        - `samlSso`: Handled via redirect flow (use `/saml/signIn` instead)
+        - `samlSso`: not accepted here; this endpoint answers `400`. SAML sign-in runs as a browser
+          redirect: send the browser to `/saml/signIn` instead
 
         **Multi-Step Response:**
 
@@ -10303,8 +11665,12 @@ paths:
 
         **Security:**
 
-        - Account locks after 5 consecutive failed attempts
+        - Account locks for 24 hours after 5 consecutive failed attempts, and the owner is
+          sent an email saying so. While it is locked, sign-in is refused with the same answer
+          as a wrong password or code, even when the password or code is right
         - CAPTCHA may be required if enabled (pass `cf-turnstile-response`)
+        - An email with no account gets the same status and message as a real account given
+          a wrong password (`400`) or a wrong, missing or expired sign-in code (`401`)
       operationId: authenticate
       security: []
       parameters:
@@ -10329,29 +11695,29 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthenticateResponse'
         '400':
-          description: Invalid request, method not allowed, invalid credential format or Account blocked due to too many failed attempts (5 attempts max)
+          description: Invalid request, method not allowed, invalid credential format, `samlSso` sent here instead of `/saml/signIn`, or wrong or missing password. A wrong password, an email with no account and a locked account all get the same message
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Invalid credentials (wrong password, expired OTP, etc.)
+          description: Wrong, missing or expired sign-in code (the same message for an email with no account and for a locked account), CAPTCHA refused, or the identity provider rejected the sign-in
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Session expired or user not found
+          description: Sign-in session expired or missing; start again with `/initAuth`
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '410':
-          description: OTP has expired (valid for 10 minutes)
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -10392,19 +11758,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/RefreshTokenResponse'
         '400':
-          description: Disabled user account
+          description: The account is locked after repeated failed sign-ins
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Invalid or expired refresh token - user must re-authenticate
+          description: |
+            The user must sign in again. Either the refresh token is invalid or
+            expired, or the session was ended by signing out or a password change.
+
+            If the account has been deleted or disabled, the message is
+            "Your account is no longer active. Contact your admin." Signing in
+            again will not help until an admin restores the account.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found (account may have been deleted), User credentials not found, or Organization not found
+          description: The user's credentials or organization could not be found
           content:
             application/json:
               schema:
@@ -10490,6 +11862,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -10535,7 +11913,6 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
             - User not authenticated (token decoded but `req.user` is null)
             - Organization ID missing from token payload
           content:
@@ -10544,6 +11921,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -10580,6 +11963,7 @@ paths:
         - No duplicate methods within the same step
         - No method can appear in multiple steps
         - Each step must have at least one allowed method
+        - `samlSso` is only allowed in a single-step policy; it can't be combined with other steps
 
         **Available Methods:**
         - `password`: Email/password authentication
@@ -10643,9 +12027,9 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
             - `authMethod` field missing from request body
             - Validation failure (duplicate steps, duplicate methods, out-of-range order, empty methods array)
+            - `samlSso` used in a policy with more than one step
           content:
             application/json:
               schema:
@@ -10655,6 +12039,12 @@ paths:
             Unauthorized. Possible causes:
             - Invalid or expired access token
             - User not authenticated (token decoded but `req.user` is null)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -10709,13 +12099,18 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -10785,6 +12180,175 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /artifacts:
+    get:
+      tags:
+      - Artifacts
+      summary: List accessible artifacts
+      description: |
+        Paginated gallery of VISIBLE, non-temporary artifacts the caller can
+        access via record ACL. TOOL_RESULT artifacts are never returned.
+        Conversation titles are a display join and are omitted when the chat
+        is gone or the caller cannot see it.
+      operationId: listArtifacts
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      - name: search
+        in: query
+        schema:
+          type: string
+          maxLength: 200
+      - name: artifactTypes
+        in: query
+        description: Comma-separated gallery artifact types (not TOOL_RESULT)
+        schema:
+          type: string
+      - name: conversationId
+        in: query
+        schema:
+          type: string
+      - name: dateFrom
+        in: query
+        schema:
+          type: integer
+      - name: dateTo
+        in: query
+        schema:
+          type: integer
+      - name: sortBy
+        in: query
+        schema:
+          type: string
+          enum:
+          - name
+          - createdAtTimestamp
+          - updatedAtTimestamp
+          - artifactType
+          default: createdAtTimestamp
+      - name: sortOrder
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      responses:
+        '200':
+          description: Paginated artifact gallery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactGalleryListResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Insufficient OAuth scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /artifacts/{artifactId}:
+    get:
+      tags:
+      - Artifacts
+      summary: Get artifact metadata
+      description: Metadata and versions for one artifact. Returns 404 if the artifact is missing, inaccessible, or not user-visible.
+      operationId: getArtifact
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: artifactId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+      responses:
+        '200':
+          description: Artifact detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactGalleryDetail'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /artifacts/{artifactId}/versions:
+    get:
+      tags:
+      - Artifacts
+      summary: List artifact versions
+      description: Immutable registry versions for one artifact.
+      operationId: listArtifactVersions
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: artifactId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+      responses:
+        '200':
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactGalleryVersion'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
           content:
             application/json:
               schema:
@@ -11489,7 +13053,7 @@ paths:
       - Knowledge Base
       summary: Delete record
       description: |
-        Permanently delete a record from the knowledge base.
+        Delete a record from the knowledge base.
 
         **Required permission:**
 
@@ -11501,7 +13065,12 @@ paths:
         - Associated storage file
         - Indexed content and embeddings
 
-        **Warning:** This action is irreversible.
+        **Trash:** With "Move Deleted Records to the Trash" on in Labs, the record
+        goes to the trash instead: it disappears from search, chat and lists at once,
+        its embeddings are removed, and the record and its file stay until the scheduled
+        purge. The response then carries `softDeleted: true` and the `batchId`, and the
+        record can be brought back with `POST /knowledgeBase/record/{recordId}/restore`.
+        With the setting off, the delete is immediate and cannot be undone.
       operationId: deleteRecord
       security:
       - bearerAuth: []
@@ -11557,6 +13126,255 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /knowledgeBase/record/{recordId}/restore:
+    post:
+      tags:
+      - Knowledge Base
+      summary: Restore a deleted record
+      description: |
+        Bring a record back from the trash, together with everything deleted in the
+        same action: a folder comes back with its contents, a file with its
+        attachments, a multi-select delete with every item it removed.
+
+        Needs "Move Deleted Records to the Trash" on in Labs.
+
+        **Required permission:** the role the delete needed. A single file needs
+        OWNER, WRITER or FILEORGANIZER on its collection; a folder or several items
+        need OWNER or WRITER.
+
+        **Names:** an item whose name another item next to it now uses comes back
+        as "name (restored)" (a file keeps its extension: "report (restored).pdf").
+
+        **Search:** restored files are indexed again, so they return to search and
+        chat once indexing finishes. `reindexPending` lists any that could not be
+        queued; reindex those by hand. A file that is back but whose indexing never
+        started is queued again when it is restored again, and the indexing service
+        queues it on its own after about an hour.
+
+        A record that is not in the trash answers 200 with nothing restored.
+      operationId: restoreRecord
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+      parameters:
+      - name: recordId
+        in: path
+        required: true
+        description: Record ID of any item in the delete batch
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Record restored, with everything deleted along with it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreRecordResponseSchema'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Not allowed. The message says why and what to do: restoring is turned off
+            in Labs (ask an admin to turn on "Move Deleted Records to the Trash"), the
+            caller lacks edit access to the collection (ask its owner), the record comes
+            from a connected app (restore it in that app; it returns at the next sync),
+            or the OAuth token is missing the kb:delete scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such record in this workspace, or it was removed for good when the trash was emptied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Nothing was restored. The message says what to do: the folder the record was
+            in is still in the trash (restore that folder first), another item has taken
+            this record's place (delete that item first, then restore), or the record
+            changed while it was being restored (refresh and try again).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while restoring the record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /knowledgeBase/records/restore:
+    post:
+      tags:
+      - Knowledge Base
+      summary: Restore several deleted records
+      description: |
+        Restore up to 100 records from the trash. Each id is restored as
+        `POST /knowledgeBase/record/{recordId}/restore` restores it, with everything
+        deleted along with it; ids from one delete are restored once. Every id gets its
+        own outcome in `results`, so one refusal does not hold the others back, and the
+        answer is 200 whatever the outcomes.
+      operationId: restoreRecords
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RestoreRecordsRequestBody'
+      responses:
+        '200':
+          description: Outcome for each requested record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreRecordsResponseSchema'
+        '400':
+          description: recordIds is missing, empty, or longer than 100. Send between 1 and 100 record ids.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token is missing the required kb:delete scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while restoring records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /knowledgeBase/{kbId}/trash:
+    get:
+      tags:
+      - Knowledge Base
+      summary: List a collection's recently deleted items
+      description: |
+        One page of what was deleted from a collection and can still be restored,
+        newest first. Each item is what one delete removed, as a restore brings it back
+        whole: a folder deleted with its contents is one item, and so is a multi-select
+        delete (`rootCount` items selected, some named in `otherRootNames`). `itemCount`
+        says how many records it holds.
+        Restore an item with `POST /knowledgeBase/record/{recordId}/restore`, using its `id`.
+
+        Needs "Move Deleted Records to the Trash" on in Labs.
+
+        **Who sees what:** the list holds what the caller may restore. OWNER and
+        WRITER see every item; FILEORGANIZER sees single files only; other roles are
+        refused. The workspace and user always come from the sign-in.
+
+        **Removed for good:** the scheduled cleanup may remove an item from
+        `removableAfterTimestamp` on (at least 14 days after it was deleted by
+        default; it runs every 14 days, so an item stays 14 to 28 days). It is
+        absent when the retention settings can't be read.
+
+        An item whose folder is also in the trash (`parentInTrash`) can only be
+        restored after that folder.
+      operationId: listTrash
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+      parameters:
+      - name: kbId
+        in: path
+        required: true
+        description: Collection (knowledge base) ID
+        schema:
+          type: string
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: One page of recently deleted items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTrashResponseSchema'
+        '400':
+          description: page or limit is not a whole number in range. Ask for a page from 1 up, with 1 to 100 items per page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Not allowed. The message says why and what to do: the trash is turned off
+            in Labs (ask an admin to turn on "Move Deleted Records to the Trash"), the
+            caller lacks edit access to the collection (ask its owner), or the OAuth
+            token is missing the kb:delete scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such collection in this workspace, or the caller has no role on it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while listing deleted items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/stream/record/{recordId}:
     get:
       tags:
@@ -11595,6 +13413,14 @@ paths:
         description: Target format for conversion
         schema:
           type: string
+      - name: version
+        in: query
+        description: |
+          Registry version to pin ARTIFACT record content to. Omit to stream
+          the latest version. Ignored for non-artifact records.
+        schema:
+          type: integer
+          minimum: 0
       responses:
         '200':
           description: File content stream
@@ -11747,7 +13573,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Folder with this name already exists at the knowledge base root or within the parent folder
+          description: |
+            Conflict. Possible reasons:
+
+            - A folder with this name already exists at the knowledge base root or within the parent folder
+            - The parent folder is in Recently deleted; restore it first, or choose another folder
           content:
             application/json:
               schema:
@@ -11970,6 +13800,7 @@ paths:
       - bearerAuth: []
       - oauth2:
         - kb:upload
+        - kb:read
       parameters:
       - name: kbId
         in: path
@@ -12045,6 +13876,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The folder is in Recently deleted; restore it first, or choose another folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '413':
           description: File size exceeds maximum allowed
           content:
@@ -12060,8 +13897,9 @@ paths:
         '500':
           description: Failed to verify knowledge base or folder access
           content:
-            schema:
-              $ref: '#/components/schemas/ErrorResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/limits:
     get:
       tags:
@@ -12339,6 +14177,12 @@ paths:
             - Knowledge base does not exist
             - Record does not exist in the knowledge base
             - Target folder does not exist in the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The target folder is in Recently deleted; restore it first, or choose another folder
           content:
             application/json:
               schema:
@@ -13394,6 +15238,118 @@ paths:
                 error:
                   code: HTTP_INTERNAL_SERVER_ERROR
                   message: An unexpected error occurred
+  /conversations/create:
+    post:
+      tags:
+      - Conversations
+      summary: Create conversation (non-streaming)
+      description: |
+        Start a new assistant conversation and wait for the complete answer.
+        The JSON counterpart of `POST /conversations/stream`, for API, SDK
+        and automation callers that do not consume SSE.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
+
+        **Modes**
+
+        `chatMode: agent` (or `agent:<mode>`) runs the universal agent and
+        honours `tools` / `agentCapabilities`; `internal_search` and
+        `web_search` run the search assistant and ignore `tools`. Omitted,
+        it defaults to internal search.
+      operationId: createConversation
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - conversation:chat
+      requestBody:
+        required: true
+        description: The first question, with optional scope, model and mode.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '201':
+          description: Conversation created with its first answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateConversationResponse'
+        '400':
+          description: |
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `conversation:write` OAuth scope.
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /conversations/stream:
     post:
       tags:
@@ -13581,6 +15537,17 @@ paths:
         description: |
           When set, filters by `isShared`. Accepts case-insensitive
           `true`/`false`, or `1`/`0`.
+        schema:
+          type: string
+      - name: projectId
+        in: query
+        required: false
+        description: |
+          Restrict results to a single project. Pass a project's `id` to
+          list conversations linked to that project (visible to the
+          caller — owner, member, or org-visible project with
+          `projectVisibility: project`), or the literal string
+          `unassigned` to list conversations with no `projectId`.
         schema:
           type: string
       responses:
@@ -14660,6 +16627,7 @@ paths:
                         - Inprogress
                         - Complete
                         - Failed
+                        - Stopped
                       failReason:
                         type: string
                         description: Populated only when `status` is `Failed`
@@ -14850,6 +16818,8 @@ paths:
                             enum:
                             - read
                             - write
+                      sharedBy:
+                        $ref: '#/components/schemas/ConversationSharedBy'
                   filters:
                     type: object
                     additionalProperties: false
@@ -15191,6 +17161,129 @@ paths:
           description: Conversation not found, already deleted, or caller has no delete access
         '500':
           description: Internal server error while deleting the conversation
+  /conversations/{conversationId}/messages:
+    post:
+      tags:
+      - Conversations
+      summary: Add message (non-streaming)
+      description: |
+        Ask a follow-up in an existing assistant conversation and wait for
+        the complete answer. The JSON counterpart of
+        `POST /conversations/{conversationId}/messages/stream`. Earlier turns
+        are sent to the model as history; project context comes from the
+        conversation, never from the request.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
+      operationId: addMessage
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - conversation:chat
+      parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      requestBody:
+        required: true
+        description: The follow-up question, with optional scope and model overrides.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMessageRequest'
+      responses:
+        '200':
+          description: The conversation with the new question and answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddMessageResponse'
+        '400':
+          description: |
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `conversation:chat` OAuth scope.
+        '404':
+          description: |
+            Conversation not found — it does not exist, belongs to another
+            user, is of the other type (assistant vs agent), or, for agent
+            routes, belongs to a different agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /conversations/{conversationId}/messages/stream:
     post:
       tags:
@@ -15242,8 +17335,9 @@ paths:
                 $ref: '#/components/schemas/ConversationMessageStreamSSEEvent'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, or another field
-            fails validation (for example a malformed `currentTime`).
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, or another field fails validation (for example a
+            malformed `currentTime`).
         '401':
           description: Unauthorized — valid bearer token required.
         '403':
@@ -15329,14 +17423,18 @@ paths:
                     type: object
                     additionalProperties: false
                     description: |
-                      The full conversation document after the title update,
-                      returned as stored in MongoDB.
+                      The conversation document after the title update, as
+                      stored in the `chatSessions` collection.
+
+                      Carries no `messages`: they live in `chatSessionMessages`
+                      (see `chat.session.schema.ts`) and this route neither
+                      reads nor joins them. Fetch the conversation by id to
+                      get its messages.
                     required:
                     - _id
                     - userId
                     - orgId
                     - initiator
-                    - messages
                     - isShared
                     - isDeleted
                     - isArchived
@@ -15369,157 +17467,6 @@ paths:
                         type: string
                         format: objectId
                         description: User who started the conversation
-                      messages:
-                        type: array
-                        description: All messages stored on this conversation.
-                        items:
-                          type: object
-                          additionalProperties: false
-                          required:
-                          - _id
-                          - messageType
-                          - content
-                          - contentFormat
-                          - citations
-                          - followUpQuestions
-                          - feedback
-                          - referenceData
-                          - createdAt
-                          - updatedAt
-                          properties:
-                            _id:
-                              type: string
-                              format: objectId
-                            messageType:
-                              type: string
-                              enum:
-                              - user_query
-                              - bot_response
-                              - error
-                              - feedback
-                              - system
-                              - tool_call
-                            content:
-                              type: string
-                            contentFormat:
-                              type: string
-                              enum:
-                              - MARKDOWN
-                              - JSON
-                              - HTML
-                              default: MARKDOWN
-                            confidence:
-                              type: string
-                              nullable: true
-                              description: |
-                                AI confidence in the answer. Present only on
-                                `bot_response` messages, and only when the
-                                model emitted a trailing confidence block.
-
-                                This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
-                            citations:
-                              type: array
-                              description: |
-                                References to source documents used in the
-                                response, stored as raw citation pointers
-                                (not populated on this endpoint).
-                              items:
-                                $ref: '#/components/schemas/CitationReference'
-                            followUpQuestions:
-                              type: array
-                              items:
-                                $ref: '#/components/schemas/FollowUpQuestion'
-                            feedback:
-                              type: array
-                              items:
-                                $ref: '#/components/schemas/MessageFeedback'
-                            referenceData:
-                              type: array
-                              description: |
-                                Reference IDs surfaced from tool responses,
-                                used for follow-up queries.
-                              items:
-                                type: object
-                                additionalProperties: false
-                                properties:
-                                  name:
-                                    type: string
-                                    description: Display name shown to the user.
-                                  id:
-                                    type: string
-                                    description: Technical identifier (numeric ID, UUID, etc.).
-                                  type:
-                                    type: string
-                                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-                                  app:
-                                    type: string
-                                    description: |
-                                      Source application (e.g. `jira`, `confluence`,
-                                      `sharepoint`, `slack`, `drive`, `gmail`).
-                                  webUrl:
-                                    type: string
-                                    description: URL to open the item in a browser.
-                                  metadata:
-                                    type: object
-                                    additionalProperties:
-                                      type: string
-                                    description: |
-                                      App-specific fields keyed by name (e.g. `key` for a Jira
-                                      project, `siteId` for a SharePoint document).
-                            modelInfo:
-                              $ref: '#/components/schemas/ConversationModelInfo'
-                            appliedFilters:
-                              type: object
-                              additionalProperties: false
-                              properties:
-                                apps:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
-                                kb:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
-                            attachments:
-                              type: array
-                              description: |
-                                Files uploaded for this message turn (see
-                                `POST /conversations/attachments/upload`).
-                              items:
-                                $ref: '#/components/schemas/ChatAttachmentRef'
-                            tools:
-                              type: array
-                              description: Tool call results invoked during this message turn.
-                              items:
-                                $ref: '#/components/schemas/MessageToolCall'
-                            reasoning:
-                              type: array
-                              description: Persisted chain-of-thought for this turn.
-                              items:
-                                $ref: '#/components/schemas/MessageReasoningTurn'
-                            parts:
-                              type: array
-                              description: Ordered agent-activity transcript for this turn.
-                              items:
-                                $ref: '#/components/schemas/MessagePart'
-                            metadata:
-                              type: object
-                              additionalProperties: false
-                              properties:
-                                processingTimeMs:
-                                  type: number
-                                modelVersion:
-                                  type: string
-                                aiTransactionId:
-                                  type: string
-                                reason:
-                                  type: string
-                            createdAt:
-                              type: string
-                              format: date-time
-                            updatedAt:
-                              type: string
-                              format: date-time
                       status:
                         type: string
                         enum:
@@ -15527,12 +17474,14 @@ paths:
                         - Inprogress
                         - Complete
                         - Failed
+                        - Stopped
                         description: |
                           Current status of the conversation:
                           - `None` — no activity yet
                           - `Inprogress` — AI is processing
                           - `Complete` — response ready
                           - `Failed` — error occurred
+                          - `Stopped` — cancelled, or the client disconnected mid-answer
                       failReason:
                         type: string
                         description: |
@@ -15920,6 +17869,72 @@ paths:
           description: Unauthorized
         '404':
           description: Conversation or message not found
+  /conversations/{conversationId}/cancel:
+    post:
+      tags:
+      - Conversations
+      summary: Cancel an in-flight chat stream
+      description: |
+        Cooperatively stop a `POST /conversations/stream` or
+        `POST /conversations/{conversationId}/messages/stream` run that is
+        still generating, using the `runId` sent when that stream started.
+
+        This is a synchronous JSON ack, not another SSE stream. The
+        cancelled run's own stream (if still connected) receives a terminal
+        frame with a `stopped` status and whatever partial answer had
+        already generated; nothing further is delivered here.
+
+        `{ cancelled: false }` — not an error — covers a `runId` that
+        already finished or was never registered; the caller only needs to
+        know the stream is not running anymore, not why.
+
+        `runId` must belong to a run started on THIS `conversationId` — a
+        `runId` that exists but was registered under a different
+        conversation (even one owned by the same caller) is rejected with
+        `403`, same as a `runId` owned by a different user/org.
+      operationId: cancelConversationStream
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - conversation:chat
+      parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - runId
+              properties:
+                runId:
+                  type: string
+                  format: uuid
+                  description: The `runId` sent when the stream was started.
+      responses:
+        '200':
+          description: Cancellation requested, or the run had already finished.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: boolean
+        '400':
+          description: Missing or malformed `runId`.
+        '401':
+          description: Unauthorized
+        '403':
+          description: '`runId` exists but was registered under a different user, org, or conversation than this request.'
+        '404':
+          description: Conversation not found or unauthorized
   /conversations/{conversationId}/message/{messageId}/feedback:
     post:
       tags:
@@ -15994,6 +18009,821 @@ paths:
             access to this conversation.
         '500':
           description: Persistence layer failed to append the feedback entry.
+  /conversations/{conversationId}/project:
+    put:
+      tags:
+      - Conversations
+      - Projects
+      summary: Link or unlink a conversation to a project
+      description: |
+        Set (`projectId: <id>`) or clear (`projectId: null`) the project this
+        conversation belongs to. Initiator-only.
+
+        **Access:**
+
+        The caller must be the conversation's initiator. Linking to a
+        non-null `projectId` also requires at least viewer access to that
+        project (`404` if not visible to the caller — never `403`, to avoid
+        leaking project existence across an org boundary).
+
+        **Visibility on link:**
+
+        When linking, `projectVisibility` defaults from the project's
+        `chatSharing` setting (`members` → `project`, otherwise `private`)
+        unless the conversation was already `project`-visible, in which case
+        that is preserved. Use
+        `PATCH /conversations/{conversationId}/project-visibility` to
+        override it explicitly. Unlinking (`projectId: null`) always clears
+        both `projectId` and `projectVisibility`.
+      operationId: setConversationProject
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - conversation:write
+      parameters:
+      - name: conversationId
+        in: path
+        required: true
+        description: Unique conversation identifier
+        schema:
+          type: string
+          format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - projectId
+              properties:
+                projectId:
+                  type: string
+                  format: objectId
+                  nullable: true
+                  description: Target project id, or `null` to unlink.
+      responses:
+        '200':
+          description: Conversation's project link updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - conversationId
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectId:
+                    type: string
+                    format: objectId
+                    nullable: true
+                  projectVisibility:
+                    type: string
+                    enum:
+                    - private
+                    - project
+                    nullable: true
+        '400':
+          description: '`projectId` missing or not a valid ObjectId/`null`.'
+        '401':
+          description: Unauthorized
+        '404':
+          description: |
+            Conversation not found or caller is not the initiator, or the
+            target project does not exist or is not visible to the caller.
+  /conversations/{conversationId}/project-visibility:
+    patch:
+      tags:
+      - Conversations
+      - Projects
+      summary: Override a conversation's project visibility
+      description: |
+        Explicitly set whether a project-linked conversation is visible to
+        other members of that project (`project`) or only to its owner
+        (`private`). Initiator-only. Requires the conversation to already be
+        linked to a project via
+        `PUT /conversations/{conversationId}/project`.
+      operationId: setConversationProjectVisibility
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - conversation:write
+      parameters:
+      - name: conversationId
+        in: path
+        required: true
+        description: Unique conversation identifier
+        schema:
+          type: string
+          format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - visibility
+              properties:
+                visibility:
+                  type: string
+                  enum:
+                  - private
+                  - project
+      responses:
+        '200':
+          description: Conversation's project visibility updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - conversationId
+                - projectVisibility
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectVisibility:
+                    type: string
+                    enum:
+                    - private
+                    - project
+        '400':
+          description: |
+            `visibility` missing/invalid, or the conversation is not linked
+            to a project.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation not found or caller is not the initiator.
+  /projects:
+    post:
+      tags:
+      - Projects
+      summary: Create a project
+      description: |
+        Create a new project workspace owned by the caller.
+      operationId: createProject
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Project created
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - project
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '400':
+          description: '`name` missing, empty after trimming, or exceeds length limits.'
+        '401':
+          description: Unauthorized
+    get:
+      tags:
+      - Projects
+      summary: List projects
+      description: |
+        Paginated, non-deleted projects visible to the caller, sorted pinned
+        first then by `lastActivityAt` descending.
+      operationId: listProjects
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:read
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: search
+        in: query
+        description: Case-insensitive match on project name.
+        schema:
+          type: string
+          maxLength: 200
+      - name: scope
+        in: query
+        description: |
+          `mine` — owned only. `shared` — projects the caller is a member
+          of. `all` — owned, member, and `visibility: org` projects.
+          Defaults to `mine`.
+        schema:
+          type: string
+          enum:
+          - mine
+          - shared
+          - all
+          default: mine
+      - name: includeArchived
+        in: query
+        description: Include archived projects alongside active projects.
+        schema:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          default: 'false'
+      - name: isArchived
+        in: query
+        description: |
+          Filter by exact archive status. When provided, this takes
+          precedence over `includeArchived`.
+        schema:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+      responses:
+        '200':
+          description: Paginated project list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - projects
+                - pagination
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectListItem'
+                  pagination:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+        '401':
+          description: Unauthorized
+  /projects/{projectId}:
+    get:
+      tags:
+      - Projects
+      summary: Get a project
+      description: |
+        Requires at least viewer access. Cross-org ids and ids the caller
+        cannot see both return `404` — never `403` — to avoid leaking
+        project existence across an org boundary.
+      operationId: getProjectById
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:read
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '200':
+          description: Project detail
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - project
+                properties:
+                  project:
+                    allOf:
+                    - $ref: '#/components/schemas/Project'
+                    - type: object
+                      properties:
+                        role:
+                          type: string
+                          enum:
+                          - owner
+                          - editor
+                          - viewer
+                          readOnly: true
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+    patch:
+      tags:
+      - Projects
+      summary: Update a project
+      description: |
+        Requires editor access. `visibility` and `chatSharing` are
+        owner-only fields — including either as a non-owner editor
+        returns `403`.
+      operationId: updateProject
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:write
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: Project updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - project
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '400':
+          description: '`name` provided but empty after trimming, or a field exceeds its length limit.'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access, or has editor (not owner) access and the request includes `visibility` or `chatSharing`.
+        '404':
+          description: Project not found or not visible to the caller.
+    delete:
+      tags:
+      - Projects
+      summary: Delete a project
+      description: |
+        Owner-only soft delete. Unlinks every `chatSessions` row pointing at
+        this project (clearing `projectId`/`projectVisibility`) before
+        marking the project deleted, so no conversation is left pointing at
+        a deleted project; wrapped in a transaction when the deployment's
+        replica set supports it. Idempotent — deleting an already-deleted
+        project returns `200` without re-running the unlink step.
+      operationId: deleteProject
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:delete
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '200':
+          description: Project deleted (or already deleted)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller has access but is not the owner.
+        '404':
+          description: Project not found or not visible to the caller.
+  /projects/{projectId}/archive:
+    post:
+      tags:
+      - Projects
+      summary: Archive a project
+      description: |
+        Requires editor access. Archived projects are hidden from the
+        default sidebar but their conversations remain reachable directly.
+      operationId: archiveProject
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:write
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '200':
+          description: Project archived
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access; this action needs editor.
+        '404':
+          description: Project not found or not visible to the caller.
+  /projects/{projectId}/unarchive:
+    post:
+      tags:
+      - Projects
+      summary: Unarchive a project
+      operationId: unarchiveProject
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:write
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '200':
+          description: Project unarchived
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access; this action needs editor.
+        '404':
+          description: Project not found or not visible to the caller.
+  /projects/{projectId}/pin:
+    post:
+      tags:
+      - Projects
+      summary: Pin a project
+      description: |
+        Requires viewer access. Pin state is owner-scoped on the document in
+        V1 — pinning affects the project for every viewer, not just the
+        caller (per-user pins are deferred).
+      operationId: pinProject
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:write
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '200':
+          description: Project pinned
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access; this action needs editor.
+        '404':
+          description: Project not found or not visible to the caller.
+  /projects/{projectId}/unpin:
+    post:
+      tags:
+      - Projects
+      summary: Unpin a project
+      operationId: unpinProject
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:write
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '200':
+          description: Project unpinned
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access; this action needs editor.
+        '404':
+          description: Project not found or not visible to the caller.
+  /projects/{projectId}/conversations:
+    get:
+      tags:
+      - Projects
+      - Conversations
+      summary: List a project's conversations
+      description: |
+        Requires viewer access to the project. Returns both chat and agent
+        sessions (`chatSessions`, discriminated by `sessionType`/`agentKey`)
+        that the caller may see: rows they own, plus rows with
+        `projectVisibility: project`. Access to the project is asserted
+        first, so a private conversation belonging to a *different* project
+        member never leaks through this endpoint.
+      operationId: getProjectConversations
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:read
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: Paginated conversations linked to the project
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - conversations
+                - pagination
+                properties:
+                  conversations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConversationListItem'
+                  pagination:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+  /projects/{projectId}/knowledge-base:
+    post:
+      tags:
+      - Projects
+      summary: Ensure (create-if-absent) the project's hidden file Collection
+      description: |
+        Requires editor access. Lazily creates the project's own hidden
+        Knowledge Base (`isHidden: true` in Python `POST /api/v1/kb`) the
+        first time a caller needs to upload a file, and returns its id
+        either way. Race-safe: concurrent callers converge on one KB —
+        the losing request's KB is deleted. The hidden KB is excluded from
+        the Collections sidebar, Knowledge Hub, and unscoped search, but is
+        always included in this project's own chat scope
+        (`filters.kb`) and file uploads go through the normal
+        `POST /knowledgeBase/{kbId}/upload` SSE pipeline afterward.
+      operationId: ensureProjectKnowledgeBase
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:write
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '200':
+          description: The project's linked Collection id (existing or newly created)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - kbId
+                properties:
+                  kbId:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller can see the project but has only viewer access; this action needs editor.
+        '404':
+          description: Project not found or not visible to the caller.
+  /projects/{projectId}/members:
+    get:
+      tags:
+      - Projects
+      summary: List project members
+      description: Requires viewer access.
+      operationId: listProjectMembers
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:read
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '200':
+          description: Project member list (excludes the implicit owner)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectMember'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Project not found or not visible to the caller.
+    put:
+      tags:
+      - Projects
+      summary: Add or update project members
+      description: |
+        Owner-only. Each `principalId` is validated against this org's IAM
+        service the same way as
+        `POST /conversations/{conversationId}/share` — a `principalId` with
+        no matching user returns `400`. Upserts by `principalId`; the owner
+        is silently skipped if included.
+      operationId: upsertProjectMembers
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:write
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectMembersUpsertRequest'
+      responses:
+        '200':
+          description: Updated member list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectMember'
+        '400':
+          description: A `principalId` does not exist in this org's IAM service.
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller has access but is not the owner.
+        '404':
+          description: Project not found or not visible to the caller.
+  /projects/{projectId}/members/{memberUserId}:
+    delete:
+      tags:
+      - Projects
+      summary: Remove a project member
+      description: Owner-only.
+      operationId: removeProjectMember
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - project:write
+      parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      - name: memberUserId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      - name: principalType
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - user
+          - team
+          default: user
+        description: |
+          Whether `memberUserId` identifies a user or a team.
+          Defaults to `user` when omitted.
+      responses:
+        '200':
+          description: Updated member list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectMember'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Caller has access but is not the owner.
+        '404':
+          description: Project not found or not visible to the caller.
   /search:
     post:
       tags:
@@ -16186,6 +19016,11 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         description: |
@@ -16217,6 +19052,11 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         description: |
@@ -16247,6 +19087,11 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         description: |
@@ -16282,6 +19127,11 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         description: |
@@ -16441,6 +19291,11 @@ paths:
                     - code
                     - message
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         enum:
@@ -16470,6 +19325,11 @@ paths:
                     - code
                     - message
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         enum:
@@ -16499,6 +19359,11 @@ paths:
                     - code
                     - message
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         enum:
@@ -16530,6 +19395,11 @@ paths:
                     - code
                     - message
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         enum:
@@ -16565,6 +19435,11 @@ paths:
                     - code
                     - message
                     properties:
+                      requestId:
+                        type: string
+                        description: |
+                          Identifier for this request, echoed so a bug report can quote it.
+                          Absent when the request never reached the middleware that assigns one.
                       code:
                         type: string
                         enum:
@@ -16975,7 +19850,7 @@ paths:
                       isDeleted: false
                       isServiceAccount: false
                       models:
-                      - 99999999-8888-7777-6666-555555555555_gpt-5.4-mini
+                      - 99999999-8888-7777-6666-555555555555_gpt-5.6-luna
                       name: Customer Support Agent
                       startMessage: Hello! How can I help you today?
                       systemPrompt: You are a helpful assistant.
@@ -17714,6 +20589,77 @@ paths:
             with offset information.
         '401':
           description: Unauthorized
+  /agents/{agentKey}/conversations/{conversationId}/cancel:
+    post:
+      tags:
+      - Agents
+      summary: Cancel an in-flight agent chat stream
+      description: |
+        Cooperatively stop a `POST /agents/{agentKey}/conversations/stream`
+        or `.../messages/stream` run that is still generating, using the
+        `runId` sent when that stream started.
+
+        Same synchronous JSON ack contract as the assistant
+        `POST /conversations/{conversationId}/cancel` — both forward to the
+        same backend cancellation endpoint, since the run registry is keyed
+        by `runId` alone. `{ cancelled: false }` covers a `runId` that
+        already finished or was never registered.
+
+        `runId` must belong to a run started on THIS `conversationId` — a
+        `runId` that exists but was registered under a different
+        conversation (even one owned by the same caller) is rejected with
+        `403`, same as a `runId` owned by a different user/org.
+      operationId: cancelAgentConversationStream
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - agent:execute
+      parameters:
+      - name: agentKey
+        in: path
+        required: true
+        description: Stable key identifying the agent that owns this conversation.
+        schema:
+          type: string
+          minLength: 1
+      - name: conversationId
+        in: path
+        required: true
+        description: ID of the agent conversation to cancel a run for.
+        schema:
+          type: string
+          format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - runId
+              properties:
+                runId:
+                  type: string
+                  format: uuid
+                  description: The `runId` sent when the stream was started.
+      responses:
+        '200':
+          description: Cancellation requested, or the run had already finished.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: boolean
+        '400':
+          description: Missing or malformed `runId`.
+        '401':
+          description: Unauthorized
+        '403':
+          description: '`runId` exists but was registered under a different user, org, or conversation than this request.'
+        '404':
+          description: Conversation not found or unauthorized
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
     post:
       tags:
@@ -17778,6 +20724,132 @@ paths:
           description: Conversation or message not found
         '500':
           description: Persistence layer failed to append the feedback entry.
+  /agents/{agentKey}/conversations/{conversationId}/messages:
+    post:
+      tags:
+      - Agents
+      summary: Add message to agent conversation (non-streaming)
+      description: |
+        Ask a follow-up in an existing agent conversation and wait for the
+        complete answer. The JSON counterpart of
+        `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
+      operationId: addAgentConversationMessage
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - agent:execute
+      parameters:
+      - name: agentKey
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      requestBody:
+        required: true
+        description: The follow-up question, with optional scope, model and tool overrides.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentAddMessageRequest'
+      responses:
+        '200':
+          description: The conversation with the new question and answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddMessageResponse'
+        '400':
+          description: |
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `agent:execute` OAuth scope, or the caller cannot use this agent.
+        '404':
+          description: |
+            Conversation not found — it does not exist, belongs to another
+            user, is of the other type (assistant vs agent), or, for agent
+            routes, belongs to a different agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /agents/{agentKey}/conversations/{conversationId}/archive:
     post:
       tags:
@@ -17950,6 +21022,153 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /agents/{agentKey}/conversations/{conversationId}/project:
+    put:
+      tags:
+      - Agents
+      - Projects
+      summary: Link or unlink an agent conversation to a project
+      description: |
+        Agent-conversation equivalent of
+        `PUT /conversations/{conversationId}/project`. Set
+        (`projectId: <id>`) or clear (`projectId: null`) the project this
+        agent conversation belongs to. Initiator-only; linking requires at
+        least viewer access to the target project.
+      operationId: setAgentConversationProject
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - agent:write
+      parameters:
+      - name: agentKey
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - projectId
+              properties:
+                projectId:
+                  type: string
+                  format: objectId
+                  nullable: true
+                  description: Target project id, or `null` to unlink.
+      responses:
+        '200':
+          description: Agent conversation's project link updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - conversationId
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectId:
+                    type: string
+                    format: objectId
+                    nullable: true
+                  projectVisibility:
+                    type: string
+                    enum:
+                    - private
+                    - project
+                    nullable: true
+        '400':
+          description: '`projectId` missing or not a valid ObjectId/`null`.'
+        '401':
+          description: Unauthorized
+        '404':
+          description: |
+            Agent conversation not found or caller is not the initiator, or
+            the target project does not exist or is not visible to the caller.
+  /agents/{agentKey}/conversations/{conversationId}/project-visibility:
+    patch:
+      tags:
+      - Agents
+      - Projects
+      summary: Override an agent conversation's project visibility
+      description: |
+        Agent-conversation equivalent of
+        `PATCH /conversations/{conversationId}/project-visibility`.
+        Initiator-only; requires the conversation to already be linked to a
+        project.
+      operationId: setAgentConversationProjectVisibility
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - agent:write
+      parameters:
+      - name: agentKey
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - visibility
+              properties:
+                visibility:
+                  type: string
+                  enum:
+                  - private
+                  - project
+      responses:
+        '200':
+          description: Agent conversation's project visibility updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - conversationId
+                - projectVisibility
+                properties:
+                  conversationId:
+                    type: string
+                    format: objectId
+                  projectVisibility:
+                    type: string
+                    enum:
+                    - private
+                    - project
+        '400':
+          description: |
+            `visibility` missing/invalid, or the conversation is not linked
+            to a project.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent conversation not found or caller is not the initiator.
   /agents/{agentKey}/conversations/{conversationId}:
     delete:
       tags:
@@ -18209,6 +21428,15 @@ paths:
           enum:
           - 'true'
           - 'false'
+      - name: projectId
+        in: query
+        required: false
+        description: |
+          Restrict results to a single project. Pass a project's `id`, or
+          the literal string `unassigned` to list agent conversations with
+          no `projectId`.
+        schema:
+          type: string
       responses:
         '200':
           description: Conversation list
@@ -18229,6 +21457,115 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - Agents
+      summary: Create agent conversation (non-streaming)
+      description: |
+        Start a conversation with an agent and wait for the complete answer.
+        The JSON counterpart of `POST /agents/{agentKey}/conversations/stream`.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
+      operationId: createAgentConversation
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - agent:execute
+      parameters:
+      - name: agentKey
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        description: The first question, with optional scope, model, project and tool overrides.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentCreateConversationRequest'
+      responses:
+        '201':
+          description: Conversation created with the agent's first answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateAgentConversationResponse'
+        '400':
+          description: |
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `agent:execute` OAuth scope, or the caller cannot use this agent.
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
           content:
             application/json:
               schema:
@@ -18643,6 +21980,10 @@ paths:
           `isDefault: true`; all subsequent models from the same entry get `false`.
         - `modelFriendlyName` is included **only** when the provider entry contains
           exactly one model name (not a comma-separated list).
+        - `defaultReasoningEffort` is included on every model of an entry whose
+          `configuration.defaultReasoningEffort` (or, when that is unset, a
+          top-level `defaultReasoningEffort`) holds a valid effort. It is left out
+          when no default is stored.
         - When no providers of the requested type are configured the endpoint still
           returns HTTP **200** with an empty `models` array — this is **not** an error.
 
@@ -18723,7 +22064,7 @@ paths:
                         modelName:
                           type: string
                           description: Specific model name/identifier forwarded to the provider API when making inference calls.
-                          example: gpt-5.4-mini
+                          example: gpt-5.6-luna
                         modelKey:
                           type: string
                           format: uuid
@@ -18745,6 +22086,16 @@ paths:
                           type: string
                           description: Optional human-readable display name. Only present when the provider configuration entry contains exactly one model name (not a comma-separated list) **and** a friendly name was added during configuration.
                           example: Reasoning model
+                        defaultReasoningEffort:
+                          type: string
+                          enum:
+                          - none
+                          - low
+                          - medium
+                          - high
+                          - max
+                          description: The model's own reasoning effort. It applies only when the chat request sets no `reasoningEffort` and the agent has no `defaultReasoningEffort`; a level the user picks always wins. Read from `configuration.defaultReasoningEffort`, falling back to a top-level `defaultReasoningEffort`. Present on every model expanded from the entry, and left out when no default is stored. `none` is a legacy value that runs as `low`.
+                          example: low
               examples:
                 two_llm_models:
                   summary: Two LLM models from an Azure OpenAI provider
@@ -18754,19 +22105,20 @@ paths:
                     models:
                     - modelType: llm
                       provider: azureOpenAI
-                      modelName: gpt-5.4-mini
+                      modelName: gpt-5.6-luna
                       modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
                       isMultimodal: true
                       isReasoning: true
                       isDefault: true
                     - modelType: llm
                       provider: azureOpenAI
-                      modelName: gpt-5.4
+                      modelName: gpt-5.6-terra
                       modelKey: 7af8d3a7-ad2e-43a1-8716-ae95e4fbc888
                       isMultimodal: true
                       isReasoning: true
                       isDefault: false
                       modelFriendlyName: Reasoning model
+                      defaultReasoningEffort: low
                 no_models_configured:
                   summary: modelType key present in config but zero models after expansion
                   value:
@@ -18954,6 +22306,11 @@ paths:
 
         **Authentication:** Session JWT or OAuth 2.0 access token via `Authorization: Bearer`.
         OAuth tokens must include the `config:read` scope. Admin role is not required.
+
+        **API keys:** for anyone who isn't an org admin, each provider's `configuration.apiKey`
+        comes back as the placeholder `****************`. Admins get the stored key, unless the
+        server hides secrets from everyone (`HIDE_SECRET_CONFIG=true`). When updating a provider,
+        sending the placeholder back keeps the stored key.
       operationId: getWebSearchProviders
       security:
       - bearerAuth: []
