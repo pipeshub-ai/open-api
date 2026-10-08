@@ -25,12 +25,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # "latest" excludes drafts and pre-releases
-          tag="$(gh api repos/pipeshub-ai/pipeshub-ai/releases/latest --jq .tag_name)"
+          # Releases are published by hand, and GitHub's "latest" follows the
+          # flags on each release: a beta without the pre-release flag (as
+          # v0.6.0-beta was) or a back-port would become "latest". Take the
+          # highest stable vX.Y.Z among the published releases instead.
+          releases="$(gh api --paginate "repos/pipeshub-ai/pipeshub-ai/releases?per_page=100" \
+            --jq '.[] | select((.draft or .prerelease) | not) | .tag_name')"
+          tag="$(printf '%s\n' "$releases" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
           if [ -z "$tag" ]; then
-            echo "Could not resolve the latest pipeshub-ai release" >&2
+            echo "::error::Could not resolve a stable pipeshub-ai release tag"
             exit 1
           fi
+          echo "Resolved pipeshub-ai release: $tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Fetch upstream spec
