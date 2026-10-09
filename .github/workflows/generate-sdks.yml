@@ -12,7 +12,7 @@ on:
       speakeasy_version:
         description: "Speakeasy CLI version"
         required: false
-        default: "v1.739.0"
+        default: "v1.801.0"
 
 # Only one SDK generation at a time; cancel older runs
 concurrency:
@@ -24,7 +24,7 @@ permissions:
 
 # Use dispatch input if provided, otherwise fallback to default
 env:
-  SPEAKEASY_VERSION: ${{ github.event.inputs.speakeasy_version || 'v1.739.0' }}
+  SPEAKEASY_VERSION: ${{ github.event.inputs.speakeasy_version || 'v1.801.0' }}
 
 jobs:
   generate-sdk:
