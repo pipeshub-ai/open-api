@@ -8,11 +8,6 @@ on:
       - ".speakeasy/**"
 
   workflow_dispatch:
-    inputs:
-      speakeasy_version:
-        description: "Speakeasy CLI version"
-        required: false
-        default: "v1.739.0"
 
 # Only one SDK generation at a time; cancel older runs
 concurrency:
@@ -22,9 +17,10 @@ concurrency:
 permissions:
   contents: read
 
-# Use dispatch input if provided, otherwise fallback to default
+# Only launches `speakeasy run`, which then downloads and generates with the
+# speakeasyVersion in .speakeasy/workflow.yaml. Change that file to upgrade.
 env:
-  SPEAKEASY_VERSION: ${{ github.event.inputs.speakeasy_version || 'v1.739.0' }}
+  SPEAKEASY_VERSION: v1.801.0
 
 jobs:
   generate-sdk:

@@ -21,7 +21,7 @@ jobs:
 
       - name: Install Speakeasy CLI
         run: |
-          curl -fsSL -o /tmp/speakeasy.zip https://github.com/speakeasy-api/speakeasy/releases/download/v1.739.0/speakeasy_linux_amd64.zip
+          curl -fsSL -o /tmp/speakeasy.zip https://github.com/speakeasy-api/speakeasy/releases/download/v1.801.0/speakeasy_linux_amd64.zip
           unzip -o /tmp/speakeasy.zip -d /usr/local/bin speakeasy
           chmod +x /usr/local/bin/speakeasy
 
