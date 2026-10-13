@@ -157,6 +157,8 @@ tags:
     - `name`, `given_name`, `family_name` - Name information
 - name: Organizations
   description: Organization management operations
+- name: Artifacts
+  description: User-facing gallery of generated artifacts (preview, download, versions)
 - name: Knowledge Base
   description: Knowledge base management operations
 - name: Knowledge Hub
@@ -310,6 +312,130 @@ components:
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
   schemas:
+    ArtifactGalleryItem:
+      type: object
+      additionalProperties: false
+      properties:
+        artifactId:
+          type: string
+        name:
+          type: string
+        logicalName:
+          type: string
+          nullable: true
+        artifactType:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+        contentHash:
+          type: string
+          nullable: true
+        conversationId:
+          type: string
+          nullable: true
+        conversationTitle:
+          type: string
+          description: Display-only chat title when the caller can see that conversation
+        createdAt:
+          type: integer
+          nullable: true
+        updatedAt:
+          type: integer
+          nullable: true
+      required:
+      - artifactId
+      - name
+      - artifactType
+      - version
+    ArtifactGalleryVersion:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+        sizeBytes:
+          type: integer
+        contentHash:
+          type: string
+        createdAt:
+          type: integer
+      required:
+      - version
+    ArtifactGalleryDetail:
+      type: object
+      additionalProperties: false
+      properties:
+        artifactId:
+          type: string
+        name:
+          type: string
+        logicalName:
+          type: string
+          nullable: true
+        artifactType:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+        contentHash:
+          type: string
+          nullable: true
+        conversationId:
+          type: string
+          nullable: true
+        conversationTitle:
+          type: string
+          description: Display-only chat title when the caller can see that conversation
+        createdAt:
+          type: integer
+          nullable: true
+        updatedAt:
+          type: integer
+          nullable: true
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactGalleryVersion'
+        description:
+          type: string
+        sourceTool:
+          type: string
+          nullable: true
+      required:
+      - artifactId
+      - name
+      - artifactType
+      - version
+    ArtifactGalleryListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactGalleryItem'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
     AuthMethod:
       type: object
       additionalProperties: false
@@ -845,11 +971,11 @@ components:
               description: |
                 Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`
                 For unhandled runtime errors (e.g. database unavailable) it is `INTERNAL_ERROR`.
-              example: HTTP_BAD_REQUEST
+              example: HTTP_FORBIDDEN
             message:
               type: string
               description: Human-readable description of the error
-              example: Admin access required
+              example: You need admin access to do this. Ask an admin in your organisation.
             metadata:
               type: object
               description: Additional context (only present in development environments)
@@ -1550,6 +1676,24 @@ components:
               type: object
               description: Optional; may appear in non-production for some errors.
               additionalProperties: true
+    RateLimitErrorResponse:
+      type: object
+      description: Rate-limit error payload (shape differs from standard error responses).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Error code.
+            message:
+              type: string
+            retryAfter:
+              type: integer
+              nullable: true
+              description: Suggested seconds to wait before retrying.
+      required:
+      - error
     OAuthTokenListItem:
       type: object
       description: |
@@ -3314,6 +3458,303 @@ components:
           type: integer
           format: int64
           nullable: true
+        softDeleted:
+          type: boolean
+          description: True when the record went to the trash instead of being removed
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch; restoring any record in it restores all of it
+        vectorCleanupPending:
+          type: boolean
+          description: The record is deleted, but removing its embeddings is still owed
+        vectorCleanupFailedRecordIds:
+          type: array
+          items:
+            type: string
+        vectorCleanupFailedVirtualRecordIds:
+          type: array
+          items:
+            type: string
+    RestoredRecordSchema:
+      type: object
+      additionalProperties: false
+      required:
+      - recordId
+      properties:
+        recordId:
+          type: string
+        name:
+          type: string
+          nullable: true
+          description: The name it has now
+        renamedFrom:
+          type: string
+          description: Its name before restore, when another item next to it had taken that name
+    RestoreRecordResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/record/{recordId}/restore.
+      required:
+      - success
+      - message
+      - restoredRecords
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch that was restored
+        restoredRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestoredRecordSchema'
+        reindexPending:
+          type: boolean
+          description: Some restored files could not be queued for indexing
+        reindexPendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Files to reindex by hand to make them searchable again
+        reindexPendingReason:
+          type: string
+        renamePendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Items restored under a name another item next to them has; rename them
+        renamePendingReason:
+          type: string
+    TrashItemSchema:
+      type: object
+      additionalProperties: false
+      description: What one delete removed (a folder with its contents, or every item of a multi-select); restoring it brings back all of it.
+      required:
+      - id
+      - isFolder
+      - parentInTrash
+      - itemCount
+      - deletedAtTimestamp
+      properties:
+        id:
+          type: string
+          description: Record ID to restore
+        name:
+          type: string
+          nullable: true
+        recordType:
+          type: string
+          nullable: true
+        isFolder:
+          type: boolean
+          description: A folder, deleted with everything in it
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          format: int64
+          nullable: true
+        parentId:
+          type: string
+          nullable: true
+          description: The folder it was in; null at the collection's top level
+        parentName:
+          type: string
+          nullable: true
+        parentInTrash:
+          type: boolean
+          description: That folder is in the trash too; restore it first
+        itemCount:
+          type: integer
+          minimum: 0
+          description: Records this delete removed, all of which a restore brings back
+        rootCount:
+          type: integer
+          minimum: 1
+          description: Items selected in the delete; more than one for a multi-select delete, which is one item here
+        otherRootNames:
+          type: array
+          items:
+            type: string
+          description: Names of up to three of the other items selected with this one
+        deletedAtTimestamp:
+          type: integer
+          format: int64
+        deletedBy:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+        removableAfterTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: From when the scheduled cleanup may remove it for good; null when unknown
+    ListTrashResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase/{kbId}/trash.
+      required:
+      - success
+      - items
+      - pagination
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrashItemSchema'
+        pagination:
+          type: object
+          additionalProperties: false
+          required:
+          - page
+          - limit
+          - totalCount
+          - totalPages
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
+        retention:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required:
+          - minAgeMs
+          properties:
+            minAgeMs:
+              type: integer
+              format: int64
+              description: Items stay at least this long before the cleanup may remove them
+    RestoreRecordsRequestBody:
+      type: object
+      additionalProperties: false
+      required:
+      - recordIds
+      properties:
+        recordIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            minLength: 1
+    RestoreRecordsResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/records/restore.
+      required:
+      - success
+      - restoredCount
+      - failedCount
+      - results
+      properties:
+        success:
+          type: boolean
+          description: True when every requested record was restored
+        restoredCount:
+          type: integer
+          description: Records restored, counting those restored along with them
+        failedCount:
+          type: integer
+        results:
+          type: array
+          description: |
+            One entry per requested id: `recordId`, `success`, `code`, and either the
+            restore response fields or a `reason` that says what to do next.
+          items:
+            $ref: '#/components/schemas/RestoreRecordsResultItemSchema'
+    RestoreRecordsResultItemSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        The outcome for one id of POST /knowledgeBase/records/restore. A restored item
+        carries the fields of RestoreRecordResponseSchema; a refused one carries `reason`,
+        and, when the refusal names other records, `blockedRecordId` plus the snake_case
+        fields below (`external_id`, `conflicting_record_id`, `conflicting_record_name`).
+      required:
+      - recordId
+      - success
+      properties:
+        recordId:
+          type: string
+        success:
+          type: boolean
+        code:
+          type: integer
+        reason:
+          type: string
+          description: Why it was not restored, and what to do next
+        message:
+          type: string
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch that was restored
+        restoredRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestoredRecordSchema'
+        reindexPending:
+          type: boolean
+          description: Some restored files could not be queued for indexing
+        reindexPendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Files to reindex by hand to make them searchable again
+        reindexPendingReason:
+          type: string
+        renamePendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Items restored under a name another item next to them has; rename them
+        renamePendingReason:
+          type: string
+        blockedRecordId:
+          type: string
+          description: The item a refusal is about
+        external_id:
+          type: string
+          description: The source item two of the restored items came from
+        conflicting_record_id:
+          type: string
+          description: The live item that holds this item's place
+        conflicting_record_name:
+          type: string
+          nullable: true
+        missing:
+          type: array
+          items:
+            type: string
+          description: Items of the batch that were no longer in the trash
+        parentId:
+          type: string
+          nullable: true
+          description: The folder still in the trash that must be restored first
     reIndexRecordResponseSchema:
       type: object
       additionalProperties: false
@@ -3399,7 +3840,7 @@ components:
         These endpoints respond with `Content-Type: text/event-stream`: the upload
         and its per-file progress are a single request. The body streams one
         terminal event per file, then a final `done` summary, then closes. `data`
-        is a JSON-encoded string whose decoded shape depends on `event`:
+        is the decoded JSON object for the frame; its shape depends on `event`:
 
         - `file:succeeded` — see `UploadSucceededFileDetail`. The file was
           uploaded and its record created; content indexing then continues
@@ -3428,8 +3869,9 @@ components:
           - done
           - error
         data:
-          type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          type: object
+          additionalProperties: true
+          description: Decoded JSON payload. Shape depends on `event`.
     IndexingStatusFilter:
       type: string
       description: |
@@ -3682,7 +4124,11 @@ components:
       - breadcrumbs
       - counts
       - permissions
+      - maxFolderDepth
       properties:
+        maxFolderDepth:
+          type: integer
+          description: Deepest a collection folder may be nested; a folder directly in the collection is depth 1.
         success:
           type: boolean
           enum:
@@ -3940,6 +4386,15 @@ components:
               type: boolean
             canManagePermissions:
               type: boolean
+            collectionRole:
+              type: string
+              nullable: true
+              description: |
+                The caller's own role on the collection (knowledge base) this node is in, as
+                restore and `GET /knowledgeBase/{kbId}/trash` check it: OWNER, WRITER,
+                FILEORGANIZER, COMMENTER or READER. Unlike `role`, which ranks record
+                permissions inside a folder, it is the same at every level of the collection.
+                Null outside a collection.
     AgentCapabilities:
       type: object
       additionalProperties: false
@@ -4185,7 +4640,9 @@ components:
           type: string
           description: |
             Identifier for the AI model configuration to use.
-            Available models depend on organization settings.
+            Available models depend on organization settings. When neither
+            `modelKey` nor `modelName` is sent, the organization's default
+            model answers and is saved in the conversation's `modelInfo`.
           example: gpt-5.6-luna
         modelName:
           type: string
@@ -4606,7 +5063,10 @@ components:
         query:
           type: string
           minLength: 1
-          description: The follow-up question or message content
+          maxLength: 100000
+          description: |
+            The follow-up question or message content. Held to the same
+            100,000-character limit as the first message of a conversation.
           example: Can you elaborate on the revenue trends?
         filters:
           $ref: '#/components/schemas/Filters'
@@ -4621,7 +5081,10 @@ components:
             `POST /conversations/attachments/upload`).
         modelKey:
           type: string
-          description: Override the model for this specific message
+          description: |
+            Override the model for this specific message. When neither
+            `modelKey` nor `modelName` is sent, the organization's default
+            model answers and is saved in the message's `modelInfo`.
         modelName:
           type: string
           description: Display name of the model
@@ -4761,6 +5224,7 @@ components:
         query:
           type: string
           minLength: 1
+          maxLength: 100000
           description: |
             User follow-up prompt to append to the existing agent conversation.
             Saved as a new `user_query` message before the upstream AI stream
@@ -7585,6 +8049,16 @@ components:
                   example: llm
                 modelFriendlyName:
                   type: string
+                defaultReasoningEffort:
+                  type: string
+                  enum:
+                  - none
+                  - low
+                  - medium
+                  - high
+                  - max
+                  description: The model's own reasoning effort, read from its stored configuration. It applies only when the chat request sets no `reasoningEffort` and the agent has no `defaultReasoningEffort`. Omitted when nothing valid is stored; `none` is a legacy value that runs as `low`.
+                  example: low
         usesOrgDefault:
           type: boolean
           description: |
@@ -9531,9 +10005,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     SSEEvent:
@@ -9542,8 +10017,8 @@ components:
         Server-Sent Event envelope for streaming chat responses. AG-UI is
         the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. Stable gateway-generated top-level outcomes:
 
         - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
@@ -9581,9 +10056,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     ConversationStreamSSEEvent:
@@ -9593,8 +10069,8 @@ components:
         `agent`, `internal_search`, or `web_search`. AG-UI is the sole wire
         protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. Universal `agent` mode may emit `STEP_STARTED`,
         `STEP_FINISHED`, and nested child-run events carrying `parentRunId`.
         Stable gateway-generated top-level outcomes:
@@ -9641,9 +10117,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`. Forwarded lifecycle events may carry `runId`,
             `threadId`, and `parentRunId`.
@@ -9654,8 +10131,8 @@ components:
         `internal_search`, or `web_search` on an existing conversation. AG-UI
         is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. Universal `agent` mode may emit step and nested
         child-run events. Stable gateway-generated top-level outcomes:
 
@@ -9701,9 +10178,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`. Forwarded lifecycle events may carry `runId`,
             `threadId`, and `parentRunId`.
@@ -9713,8 +10191,8 @@ components:
         SSE event envelope for `POST /agents/{agentKey}/conversations/stream`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. The public route requires `chatMode: quick`.
         Forwarded lifecycle events may carry `runId`, `threadId`, and
         `parentRunId`; gateway-generated root terminal events do not.
@@ -9749,9 +10227,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     AgentMessageStreamSSEEvent:
@@ -9760,8 +10239,8 @@ components:
         Server-Sent Event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. The public route requires `chatMode: quick`.
         Forwarded lifecycle events may carry `runId`, `threadId`, and
         `parentRunId`. Stable gateway-generated top-level outcomes:
@@ -9806,9 +10285,10 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     ModelType:
@@ -9910,7 +10390,7 @@ paths:
         **Grant Types:**
         - `authorization_code`: Exchange auth code for tokens (user-based)
         - `client_credentials`: Get tokens for machine-to-machine auth
-        - `refresh_token`: Get new access token using refresh token
+        - `refresh_token`: Get new access token using refresh token. The refresh token must have been issued to the presenting `client_id`; one issued to another client is rejected with `400 invalid_grant` and is left untouched (not rotated, not revoked).
 
         For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
 
@@ -10176,7 +10656,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to list OAuth apps
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
           content:
             application/json:
               schema:
@@ -10229,7 +10709,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to create OAuth apps
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
           content:
             application/json:
               schema:
@@ -10285,6 +10765,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded for OAuth client management routes
           content:
@@ -10330,7 +10816,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -10397,7 +10883,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -10451,7 +10937,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -10504,7 +10990,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -10563,7 +11049,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -10622,7 +11108,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -10675,7 +11161,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -10735,7 +11221,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -10955,9 +11441,9 @@ paths:
         compromised laptop, where only the token's own creator could
         otherwise see or revoke it.
 
-        Requires org-admin privileges (`userAdminCheck`) — note this returns
-        **`400`**, not `403`, for a non-admin caller (shared middleware
-        behavior across the codebase, not specific to this route).
+        Requires org-admin privileges (`userAdminCheck`): a non-admin caller
+        gets `403` (`ForbiddenError`, message
+        "You need admin access to do this. Ask an admin in your organisation.").
       operationId: adminListPersonalAccessTokens
       security:
       - bearerAuth: []
@@ -10985,13 +11471,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/AdminPatListResponse'
         '400':
-          description: Invalid query parameters, or the caller is not an org admin
+          description: Invalid query parameters
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -11011,8 +11503,8 @@ paths:
         Revokes a token by id, scoped to the org's PAT client but **not** to
         a specific owning user — the admin counterpart to
         `DELETE /personal-access-tokens/{tokenId}`. Requires org-admin
-        privileges (`userAdminCheck`); returns `400` (not `403`) for a
-        non-admin caller, same as `GET /personal-access-tokens/admin`.
+        privileges (`userAdminCheck`); a non-admin caller gets `403`
+        (`ForbiddenError`), same as `GET /personal-access-tokens/admin`.
       operationId: adminRevokePersonalAccessToken
       security:
       - bearerAuth: []
@@ -11039,13 +11531,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/RevokePatResponse'
         '400':
-          description: Invalid token ID, or the caller is not an org admin
+          description: Invalid token ID
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -11123,6 +11621,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -11208,6 +11712,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -11248,19 +11758,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/RefreshTokenResponse'
         '400':
-          description: Disabled user account
+          description: The account is locked after repeated failed sign-ins
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Invalid or expired refresh token - user must re-authenticate
+          description: |
+            The user must sign in again. Either the refresh token is invalid or
+            expired, or the session was ended by signing out or a password change.
+
+            If the account has been deleted or disabled, the message is
+            "Your account is no longer active. Contact your admin." Signing in
+            again will not help until an admin restores the account.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found (account may have been deleted), User credentials not found, or Organization not found
+          description: The user's credentials or organization could not be found
           content:
             application/json:
               schema:
@@ -11346,6 +11862,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -11391,7 +11913,6 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
             - User not authenticated (token decoded but `req.user` is null)
             - Organization ID missing from token payload
           content:
@@ -11400,6 +11921,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -11500,7 +12027,6 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
             - `authMethod` field missing from request body
             - Validation failure (duplicate steps, duplicate methods, out-of-range order, empty methods array)
             - `samlSso` used in a policy with more than one step
@@ -11513,6 +12039,12 @@ paths:
             Unauthorized. Possible causes:
             - Invalid or expired access token
             - User not authenticated (token decoded but `req.user` is null)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -11567,13 +12099,18 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -11643,6 +12180,175 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /artifacts:
+    get:
+      tags:
+      - Artifacts
+      summary: List accessible artifacts
+      description: |
+        Paginated gallery of VISIBLE, non-temporary artifacts the caller can
+        access via record ACL. TOOL_RESULT artifacts are never returned.
+        Conversation titles are a display join and are omitted when the chat
+        is gone or the caller cannot see it.
+      operationId: listArtifacts
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      - name: search
+        in: query
+        schema:
+          type: string
+          maxLength: 200
+      - name: artifactTypes
+        in: query
+        description: Comma-separated gallery artifact types (not TOOL_RESULT)
+        schema:
+          type: string
+      - name: conversationId
+        in: query
+        schema:
+          type: string
+      - name: dateFrom
+        in: query
+        schema:
+          type: integer
+      - name: dateTo
+        in: query
+        schema:
+          type: integer
+      - name: sortBy
+        in: query
+        schema:
+          type: string
+          enum:
+          - name
+          - createdAtTimestamp
+          - updatedAtTimestamp
+          - artifactType
+          default: createdAtTimestamp
+      - name: sortOrder
+        in: query
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+          default: desc
+      responses:
+        '200':
+          description: Paginated artifact gallery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactGalleryListResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Insufficient OAuth scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /artifacts/{artifactId}:
+    get:
+      tags:
+      - Artifacts
+      summary: Get artifact metadata
+      description: Metadata and versions for one artifact. Returns 404 if the artifact is missing, inaccessible, or not user-visible.
+      operationId: getArtifact
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: artifactId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+      responses:
+        '200':
+          description: Artifact detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactGalleryDetail'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /artifacts/{artifactId}/versions:
+    get:
+      tags:
+      - Artifacts
+      summary: List artifact versions
+      description: Immutable registry versions for one artifact.
+      operationId: listArtifactVersions
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: artifactId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+      responses:
+        '200':
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactGalleryVersion'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
           content:
             application/json:
               schema:
@@ -12347,7 +13053,7 @@ paths:
       - Knowledge Base
       summary: Delete record
       description: |
-        Permanently delete a record from the knowledge base.
+        Delete a record from the knowledge base.
 
         **Required permission:**
 
@@ -12359,7 +13065,12 @@ paths:
         - Associated storage file
         - Indexed content and embeddings
 
-        **Warning:** This action is irreversible.
+        **Trash:** With "Move Deleted Records to the Trash" on in Labs, the record
+        goes to the trash instead: it disappears from search, chat and lists at once,
+        its embeddings are removed, and the record and its file stay until the scheduled
+        purge. The response then carries `softDeleted: true` and the `batchId`, and the
+        record can be brought back with `POST /knowledgeBase/record/{recordId}/restore`.
+        With the setting off, the delete is immediate and cannot be undone.
       operationId: deleteRecord
       security:
       - bearerAuth: []
@@ -12415,6 +13126,255 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /knowledgeBase/record/{recordId}/restore:
+    post:
+      tags:
+      - Knowledge Base
+      summary: Restore a deleted record
+      description: |
+        Bring a record back from the trash, together with everything deleted in the
+        same action: a folder comes back with its contents, a file with its
+        attachments, a multi-select delete with every item it removed.
+
+        Needs "Move Deleted Records to the Trash" on in Labs.
+
+        **Required permission:** the role the delete needed. A single file needs
+        OWNER, WRITER or FILEORGANIZER on its collection; a folder or several items
+        need OWNER or WRITER.
+
+        **Names:** an item whose name another item next to it now uses comes back
+        as "name (restored)" (a file keeps its extension: "report (restored).pdf").
+
+        **Search:** restored files are indexed again, so they return to search and
+        chat once indexing finishes. `reindexPending` lists any that could not be
+        queued; reindex those by hand. A file that is back but whose indexing never
+        started is queued again when it is restored again, and the indexing service
+        queues it on its own after about an hour.
+
+        A record that is not in the trash answers 200 with nothing restored.
+      operationId: restoreRecord
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+      parameters:
+      - name: recordId
+        in: path
+        required: true
+        description: Record ID of any item in the delete batch
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Record restored, with everything deleted along with it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreRecordResponseSchema'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Not allowed. The message says why and what to do: restoring is turned off
+            in Labs (ask an admin to turn on "Move Deleted Records to the Trash"), the
+            caller lacks edit access to the collection (ask its owner), the record comes
+            from a connected app (restore it in that app; it returns at the next sync),
+            or the OAuth token is missing the kb:delete scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such record in this workspace, or it was removed for good when the trash was emptied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Nothing was restored. The message says what to do: the folder the record was
+            in is still in the trash (restore that folder first), another item has taken
+            this record's place (delete that item first, then restore), or the record
+            changed while it was being restored (refresh and try again).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while restoring the record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /knowledgeBase/records/restore:
+    post:
+      tags:
+      - Knowledge Base
+      summary: Restore several deleted records
+      description: |
+        Restore up to 100 records from the trash. Each id is restored as
+        `POST /knowledgeBase/record/{recordId}/restore` restores it, with everything
+        deleted along with it; ids from one delete are restored once. Every id gets its
+        own outcome in `results`, so one refusal does not hold the others back, and the
+        answer is 200 whatever the outcomes.
+      operationId: restoreRecords
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RestoreRecordsRequestBody'
+      responses:
+        '200':
+          description: Outcome for each requested record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreRecordsResponseSchema'
+        '400':
+          description: recordIds is missing, empty, or longer than 100. Send between 1 and 100 record ids.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token is missing the required kb:delete scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while restoring records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /knowledgeBase/{kbId}/trash:
+    get:
+      tags:
+      - Knowledge Base
+      summary: List a collection's recently deleted items
+      description: |
+        One page of what was deleted from a collection and can still be restored,
+        newest first. Each item is what one delete removed, as a restore brings it back
+        whole: a folder deleted with its contents is one item, and so is a multi-select
+        delete (`rootCount` items selected, some named in `otherRootNames`). `itemCount`
+        says how many records it holds.
+        Restore an item with `POST /knowledgeBase/record/{recordId}/restore`, using its `id`.
+
+        Needs "Move Deleted Records to the Trash" on in Labs.
+
+        **Who sees what:** the list holds what the caller may restore. OWNER and
+        WRITER see every item; FILEORGANIZER sees single files only; other roles are
+        refused. The workspace and user always come from the sign-in.
+
+        **Removed for good:** the scheduled cleanup may remove an item from
+        `removableAfterTimestamp` on (at least 14 days after it was deleted by
+        default; it runs every 14 days, so an item stays 14 to 28 days). It is
+        absent when the retention settings can't be read.
+
+        An item whose folder is also in the trash (`parentInTrash`) can only be
+        restored after that folder.
+      operationId: listTrash
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:delete
+      parameters:
+      - name: kbId
+        in: path
+        required: true
+        description: Collection (knowledge base) ID
+        schema:
+          type: string
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: One page of recently deleted items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTrashResponseSchema'
+        '400':
+          description: page or limit is not a whole number in range. Ask for a page from 1 up, with 1 to 100 items per page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Not allowed. The message says why and what to do: the trash is turned off
+            in Labs (ask an admin to turn on "Move Deleted Records to the Trash"), the
+            caller lacks edit access to the collection (ask its owner), or the OAuth
+            token is missing the kb:delete scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such collection in this workspace, or the caller has no role on it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while listing deleted items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/stream/record/{recordId}:
     get:
       tags:
@@ -12453,6 +13413,14 @@ paths:
         description: Target format for conversion
         schema:
           type: string
+      - name: version
+        in: query
+        description: |
+          Registry version to pin ARTIFACT record content to. Omit to stream
+          the latest version. Ignored for non-artifact records.
+        schema:
+          type: integer
+          minimum: 0
       responses:
         '200':
           description: File content stream
@@ -12605,7 +13573,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Folder with this name already exists at the knowledge base root or within the parent folder
+          description: |
+            Conflict. Possible reasons:
+
+            - A folder with this name already exists at the knowledge base root or within the parent folder
+            - The parent folder is in Recently deleted; restore it first, or choose another folder
           content:
             application/json:
               schema:
@@ -12828,6 +13800,7 @@ paths:
       - bearerAuth: []
       - oauth2:
         - kb:upload
+        - kb:read
       parameters:
       - name: kbId
         in: path
@@ -12899,6 +13872,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Knowledge base or folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The folder is in Recently deleted; restore it first, or choose another folder
           content:
             application/json:
               schema:
@@ -13198,6 +14177,12 @@ paths:
             - Knowledge base does not exist
             - Record does not exist in the knowledge base
             - Target folder does not exist in the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The target folder is in Recently deleted; restore it first, or choose another folder
           content:
             application/json:
               schema:
@@ -14295,7 +15280,7 @@ paths:
       security:
       - bearerAuth: []
       - oauth2:
-        - conversation:write
+        - conversation:chat
       requestBody:
         required: true
         description: The first question, with optional scope, model and mode.
@@ -14315,8 +15300,9 @@ paths:
                 $ref: '#/components/schemas/CreateConversationResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -14337,8 +15323,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -16238,8 +17225,9 @@ paths:
                 $ref: '#/components/schemas/AddMessageResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -16269,8 +17257,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -16346,8 +17335,9 @@ paths:
                 $ref: '#/components/schemas/ConversationMessageStreamSSEEvent'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, or another field
-            fails validation (for example a malformed `currentTime`).
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, or another field fails validation (for example a
+            malformed `currentTime`).
         '401':
           description: Unauthorized — valid bearer token required.
         '403':
@@ -19801,8 +20791,9 @@ paths:
                 $ref: '#/components/schemas/AddMessageResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -19832,8 +20823,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -20528,8 +21520,9 @@ paths:
                 $ref: '#/components/schemas/CreateAgentConversationResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -20550,8 +21543,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -20986,6 +21980,10 @@ paths:
           `isDefault: true`; all subsequent models from the same entry get `false`.
         - `modelFriendlyName` is included **only** when the provider entry contains
           exactly one model name (not a comma-separated list).
+        - `defaultReasoningEffort` is included on every model of an entry whose
+          `configuration.defaultReasoningEffort` (or, when that is unset, a
+          top-level `defaultReasoningEffort`) holds a valid effort. It is left out
+          when no default is stored.
         - When no providers of the requested type are configured the endpoint still
           returns HTTP **200** with an empty `models` array — this is **not** an error.
 
@@ -21088,6 +22086,16 @@ paths:
                           type: string
                           description: Optional human-readable display name. Only present when the provider configuration entry contains exactly one model name (not a comma-separated list) **and** a friendly name was added during configuration.
                           example: Reasoning model
+                        defaultReasoningEffort:
+                          type: string
+                          enum:
+                          - none
+                          - low
+                          - medium
+                          - high
+                          - max
+                          description: The model's own reasoning effort. It applies only when the chat request sets no `reasoningEffort` and the agent has no `defaultReasoningEffort`; a level the user picks always wins. Read from `configuration.defaultReasoningEffort`, falling back to a top-level `defaultReasoningEffort`. Present on every model expanded from the entry, and left out when no default is stored. `none` is a legacy value that runs as `low`.
+                          example: low
               examples:
                 two_llm_models:
                   summary: Two LLM models from an Azure OpenAI provider
@@ -21110,6 +22118,7 @@ paths:
                       isReasoning: true
                       isDefault: false
                       modelFriendlyName: Reasoning model
+                      defaultReasoningEffort: low
                 no_models_configured:
                   summary: modelType key present in config but zero models after expansion
                   value:
