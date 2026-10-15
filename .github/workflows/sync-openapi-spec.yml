@@ -4,6 +4,14 @@ on:
   schedule:
     - cron: "0 */12 * * *"
   workflow_dispatch:
+    inputs:
+      source:
+        description: "pipeshub-ai spec to sync from"
+        type: choice
+        options:
+          - latest-release
+          - main
+        default: latest-release
 
 permissions:
   contents: write
@@ -20,11 +28,23 @@ jobs:
           # Fetch all history so we can switch branches easily
           fetch-depth: 0
 
-      - name: Resolve latest upstream release
+      - name: Resolve upstream ref
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Scheduled runs have no inputs, so they always take the release.
+          SOURCE: ${{ inputs.source || 'latest-release' }}
         run: |
+          if [ "$SOURCE" = "main" ]; then
+            # Pin the commit, so the PR says exactly which spec it carries.
+            sha="$(gh api repos/pipeshub-ai/pipeshub-ai/commits/main --jq .sha)"
+            echo "Resolved pipeshub-ai main: $sha"
+            echo "ref=$sha" >> "$GITHUB_OUTPUT"
+            echo "tag=main@${sha:0:9}" >> "$GITHUB_OUTPUT"
+            echo "url=https://github.com/pipeshub-ai/pipeshub-ai/commit/$sha" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Releases are published by hand, and GitHub's "latest" follows the
           # flags on each release: a beta without the pre-release flag (as
           # v0.6.0-beta was) or a back-port would become "latest". Take the
@@ -38,13 +58,27 @@ jobs:
           fi
           echo "Resolved pipeshub-ai release: $tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ref=refs/tags/$tag" >> "$GITHUB_OUTPUT"
+          echo "url=https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/$tag" >> "$GITHUB_OUTPUT"
+
+          # A spec synced from main must not be rolled back to an older release.
+          # Skip until a release contains the main commit it came from.
+          last="$(git log -1 --format=%s --grep='sync OpenAPI spec from upstream' -- source_specs/pipeshub-openapi.yaml)"
+          synced="$(printf '%s\n' "$last" | grep -oE 'main@[0-9a-f]{9}' | cut -d@ -f2 || true)"
+          if [ -n "$synced" ]; then
+            status="$(gh api "repos/pipeshub-ai/pipeshub-ai/compare/${synced}...${tag}" --jq .status)"
+            if [ "$status" != "ahead" ] && [ "$status" != "identical" ]; then
+              echo "::notice::Spec was synced from pipeshub-ai main@${synced}, which $tag does not contain; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
 
       - name: Fetch upstream spec
         env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          UPSTREAM_REF: ${{ steps.release.outputs.ref }}
         run: |
           curl -fsSL \
-            "https://raw.githubusercontent.com/pipeshub-ai/pipeshub-ai/refs/tags/${RELEASE_TAG}/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml" \
+            "https://raw.githubusercontent.com/pipeshub-ai/pipeshub-ai/${UPSTREAM_REF}/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml" \
             -o /tmp/upstream-openapi.yaml
 
       - name: Set up Python
@@ -64,6 +98,10 @@ jobs:
         id: diff
         run: |
           changed=false
+          if [ "${{ steps.release.outputs.skip }}" = "true" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if ! diff -q source_specs/pipeshub-openapi.yaml /tmp/upstream-openapi.yaml > /dev/null 2>&1; then
             changed=true
           fi
@@ -101,9 +139,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          UPSTREAM_URL: ${{ steps.release.outputs.url }}
         run: |
           title="chore: sync OpenAPI spec from upstream ${RELEASE_TAG}"
-          body="This PR was automatically created to sync the OpenAPI spec from the pipeshub-ai release [${RELEASE_TAG}](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/${RELEASE_TAG})."
+          body="This PR was automatically created to sync the OpenAPI spec from pipeshub-ai [${RELEASE_TAG}](${UPSTREAM_URL})."
 
           # If the PR already exists, keep its title and body on the current release
           gh pr create \
@@ -117,8 +156,10 @@ jobs:
         if: always()
         run: |
           echo "### OpenAPI Spec Sync Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "Upstream release: \`${{ steps.release.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.diff.outputs.changed }}" == "true" ]; then
+          echo "Upstream: \`${{ steps.release.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.release.outputs.skip }}" == "true" ]; then
+            echo "⏭️ Skipped: the current spec came from a newer pipeshub-ai main commit." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.diff.outputs.changed }}" == "true" ]; then
             echo "✅ Upstream changes detected and pushed to branch." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "✨ No changes detected." >> "$GITHUB_STEP_SUMMARY"
