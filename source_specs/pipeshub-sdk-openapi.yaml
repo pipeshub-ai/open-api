@@ -3875,7 +3875,7 @@ components:
         These endpoints respond with `Content-Type: text/event-stream`: the upload
         and its per-file progress are a single request. The body streams one
         terminal event per file, then a final `done` summary, then closes. `data`
-        is the decoded JSON object for the frame; its shape depends on `event`:
+        is a JSON-encoded string whose decoded shape depends on `event`:
 
         - `file:succeeded` — see `UploadSucceededFileDetail`. The file was
           uploaded and its record created; content indexing then continues
@@ -3904,9 +3904,8 @@ components:
           - done
           - error
         data:
-          type: object
-          additionalProperties: true
-          description: Decoded JSON payload. Shape depends on `event`.
+          type: string
+          description: JSON-encoded event payload. Shape depends on `event`.
     IndexingStatusFilter:
       type: string
       description: |
@@ -10047,10 +10046,9 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     SSEEvent:
@@ -10059,8 +10057,8 @@ components:
         Server-Sent Event envelope for streaming chat responses. AG-UI is
         the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is the decoded JSON
-        object, which includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
         type-specific fields. Stable gateway-generated top-level outcomes:
 
         - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
@@ -10098,10 +10096,9 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     ConversationStreamSSEEvent:
@@ -10111,8 +10108,8 @@ components:
         `agent`, `internal_search`, or `web_search`. AG-UI is the sole wire
         protocol.
 
-        `event` carries the AG-UI type name and `data` is the decoded JSON
-        object, which includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
         type-specific fields. Universal `agent` mode may emit `STEP_STARTED`,
         `STEP_FINISHED`, and nested child-run events carrying `parentRunId`.
         Stable gateway-generated top-level outcomes:
@@ -10159,10 +10156,9 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`. Forwarded lifecycle events may carry `runId`,
             `threadId`, and `parentRunId`.
@@ -10173,8 +10169,8 @@ components:
         `internal_search`, or `web_search` on an existing conversation. AG-UI
         is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is the decoded JSON
-        object, which includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
         type-specific fields. Universal `agent` mode may emit step and nested
         child-run events. Stable gateway-generated top-level outcomes:
 
@@ -10220,10 +10216,9 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`. Forwarded lifecycle events may carry `runId`,
             `threadId`, and `parentRunId`.
@@ -10233,8 +10228,8 @@ components:
         SSE event envelope for `POST /agents/{agentKey}/conversations/stream`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is the decoded JSON
-        object, which includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
         type-specific fields. The public route requires `chatMode: quick`.
         Forwarded lifecycle events may carry `runId`, `threadId`, and
         `parentRunId`; gateway-generated root terminal events do not.
@@ -10269,10 +10264,9 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     AgentMessageStreamSSEEvent:
@@ -10281,8 +10275,8 @@ components:
         Server-Sent Event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is the decoded JSON
-        object, which includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
         type-specific fields. The public route requires `chatMode: quick`.
         Forwarded lifecycle events may carry `runId`, `threadId`, and
         `parentRunId`. Stable gateway-generated top-level outcomes:
@@ -10327,10 +10321,9 @@ components:
           - CUSTOM
           - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
     ConnectorScope:
