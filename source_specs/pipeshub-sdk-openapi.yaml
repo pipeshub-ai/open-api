@@ -186,6 +186,19 @@ tags:
 - name: Web Search
   description: Manage web search providers (DuckDuckGo, Serper, Tavily, Exa) and settings for internet search.
 components:
+  parameters:
+    RevealStoredSecrets:
+      name: reveal
+      in: query
+      required: false
+      description: |
+        Set to `true` to receive stored secrets instead of placeholders. Honoured only for an
+        admin's own configuration where the deployment allows it (see `GET
+        /configurationManager/secretReveal`); ignored for OAuth-app tokens and any other value.
+      schema:
+        type: string
+        enum:
+        - 'true'
   headers:
     X-Conversation-Id:
       description: |
@@ -348,6 +361,10 @@ components:
         updatedAt:
           type: integer
           nullable: true
+        role:
+          type: string
+          nullable: true
+          description: The caller's permission on the artifact. OWNER for artifacts the caller created; READER for artifacts shared with them.
       required:
       - artifactId
       - name
@@ -403,6 +420,10 @@ components:
         updatedAt:
           type: integer
           nullable: true
+        role:
+          type: string
+          nullable: true
+          description: The caller's permission on the artifact. OWNER for artifacts the caller created; READER for artifacts shared with them.
         versions:
           type: array
           items:
@@ -436,6 +457,43 @@ components:
               type: integer
             totalPages:
               type: integer
+        counts:
+          type: object
+          description: Artifacts in each gallery tab under the same filters, ignoring `ownership`.
+          properties:
+            all:
+              type: integer
+            mine:
+              type: integer
+            shared:
+              type: integer
+    ArtifactMember:
+      type: object
+      additionalProperties: false
+      properties:
+        userId:
+          type: string
+        role:
+          type: string
+          enum:
+          - OWNER
+          - READER
+      required:
+      - userId
+      - role
+    ArtifactShareRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        userIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            pattern: ^[a-fA-F0-9]{24}$
+      required:
+      - userIds
     AuthMethod:
       type: object
       additionalProperties: false
@@ -945,6 +1003,33 @@ components:
       - contactEmail
       - registeredName
       - adminFullName
+    ToolApprovalAnswer:
+      type: object
+      description: |
+        The person's answer to a tool approval card. The web app sends it with the query
+        `Tool approval: allow` or `Tool approval: deny`, and the request carries on the turn that
+        stopped on the card: the saved call runs (when allowed) and its result answers the call
+        the model made, in the same reply. The call is the one saved server-side when the card was
+        shown (answerable for 15 minutes, settled once, bound to the asking user and
+        conversation); only its id and the answer travel here. A reply that answered a card
+        can't be regenerated.
+      required:
+      - approvalId
+      - decision
+      properties:
+        approvalId:
+          type: string
+          maxLength: 64
+        decision:
+          type: string
+          enum:
+          - allow
+          - deny
+        remember:
+          type: boolean
+          description: |
+            "Don't ask again for this tool": the answer becomes the person's own rule for the
+            tool (Pre-approved for allow, Deny for deny).
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -2827,6 +2912,13 @@ components:
                 chain. A group with no parent is its own root, so this is null
                 only for records written before the field existed, or by
                 connectors that do not set it.
+            uploadedBy:
+              type: string
+              nullable: true
+              description: |
+                User id of whoever uploaded the file to the knowledge base.
+                Absent for connector records and for files uploaded before the
+                field existed.
             connectorId:
               type: string
             connectorName:
@@ -3174,14 +3266,124 @@ components:
 
         For `TICKET` records (e.g. Jira) the metadata header is refreshed with
         live ticket fields (status, assignee, comments) at request time rather
-        than the last-indexed snapshot. `content` may be empty for records with
-        no extractable text (e.g. image-only or not-yet-parsed records).
+        than the last-indexed snapshot. `content` may be empty for an indexed
+        record with no extractable text (e.g. image-only).
+
+        A record that exists and that the caller may read, but whose content
+        is not indexed yet (`indexingStatus` other than `COMPLETED`), has no
+        parsed text. `content` is then a description of the record instead:
+        its metadata header (name, link, dates, type-specific fields) followed
+        by a paragraph that starts `Not indexed:` and names the status, e.g.
+        `(status: AUTO_INDEX_OFF)`. It is not the record's text.
+
+        `content` is the literal `No record found` when the caller may read
+        an indexed record but its stored content could not be loaded. An id
+        that does not exist, a record in the trash, and a record the caller
+        may not read all answer `403` instead.
       required:
       - content
       properties:
         content:
           type: string
-          description: The record's full parsed content as a single plain-text string.
+          description: The record's full parsed content as a single plain-text string; for a record whose content is not indexed yet, a description of the record and its indexing status instead (see above). In a budgeted read, the part of the record (or thread) that fit.
+        mode:
+          type: string
+          enum:
+          - record
+          - thread
+          description: Budgeted reads only. Which kind of read this was.
+        recordId:
+          type: string
+          description: Budgeted record reads only. The record read.
+        order:
+          type: string
+          enum:
+          - in_order
+          - relevance
+          description: Budgeted record reads only. `relevance` when `query` chose which blocks to show; the blocks are then not contiguous.
+        startBlock:
+          type: integer
+          description: Budgeted reads only. Where this read started (in a thread read, within the record at `startRecord`).
+        totalBlocks:
+          type: integer
+          description: Budgeted record reads only. Blocks in the record.
+        shownBlocks:
+          type: array
+          description: Budgeted record reads only. The block ranges shown, as `[first, last]` pairs.
+          items:
+            type: array
+            items:
+              type: integer
+        complete:
+          type: boolean
+          description: Budgeted reads only. True when nothing of the record (or thread) is left to read after this one. A block larger than the largest `maxChars` (140000) is returned cut and given up; when nothing follows it, `complete` is true and `truncatedBy` is `clipped`.
+        truncatedBy:
+          type: string
+          nullable: true
+          description: 'Budgeted reads. Why the read stopped short: `chars`, `selection`, or `clipped` (a block larger than `maxChars` was cut; it takes precedence over the others). Null when the read lost nothing. `clipped` can come with `complete: true`: a block given up at the largest `maxChars` with nothing after it.'
+        givenUpBlock:
+          type: integer
+          nullable: true
+          description: 'Budgeted record reads only. A block larger than the largest `maxChars` (140000) that this read cut and gave up: no read can return the rest of it. Set in the read that gave it up, even when more of the record follows.'
+        givenUpBlocks:
+          type: array
+          description: Thread reads only. Every block this read gave up at the largest `maxChars`, by record.
+          items:
+            type: object
+            properties:
+              recordId:
+                type: string
+              block:
+                type: integer
+        nextStartBlock:
+          type: integer
+          nullable: true
+          description: 'Pass as `startBlock` to read on; null when nothing is left. In a thread read it is the block of the record at `nextStartRecord` (0 unless that record was cut short). A block larger than `maxChars` holds it on that block: send it again with a larger `maxChars` (up to 140000) to read the block whole.'
+        threadRecordCount:
+          type: integer
+          description: Thread reads only. Records in the thread the caller may see.
+        startRecord:
+          type: integer
+          description: Thread reads only. Where this read started.
+        nextStartRecord:
+          type: integer
+          nullable: true
+          description: 'Thread reads only. Pass as `startRecord`, with `nextStartBlock` as `startBlock`, to read on. It stays on a record that was cut short until that record has been read to its end. A block larger than `maxChars` holds the cursor on that block; send the same cursor with a larger `maxChars` to read it. Null when nothing is left to read, and `complete` is then true. A block given up at the largest `maxChars` is named in the text, and its record''s entry in `records` has `truncatedBy: clipped`.'
+        records:
+          type: array
+          description: Thread reads only. The records shown, oldest first.
+          items:
+            type: object
+            properties:
+              recordId:
+                type: string
+              recordName:
+                type: string
+                nullable: true
+              startBlock:
+                type: integer
+              complete:
+                type: boolean
+              truncatedBy:
+                type: string
+                nullable: true
+              givenUpBlock:
+                type: integer
+                nullable: true
+              nextStartBlock:
+                type: integer
+                nullable: true
+        unreadableRecordIds:
+          type: array
+          description: Thread reads only. Records of the thread the caller may see whose content could not be loaded.
+          items:
+            type: string
+        chars:
+          type: integer
+          description: Budgeted reads only. Characters in `content`.
+        maxChars:
+          type: integer
+          description: Budgeted reads only. The budget this read used.
     KnowledgeGraphNodeRefSchema:
       type: object
       additionalProperties: false
@@ -4442,6 +4644,128 @@ components:
           description: |
             Knowledge-base app ids to scope retrieval for this turn.
             Each element must be a valid UUID.
+        entityFilters:
+          type: object
+          additionalProperties: false
+          x-pipeshub-stability: experimental
+          description: |
+            **Experimental** named-entity constraints (Labs flag `ENABLE_NAMED_ENTITY_EXTRACTION`, or `HIGH_ACCURACY_MODE`).
+            Every constraint must hold for the same record: an amount and a date match a record
+            that mentions both, not one entity that is both. `name`/`entityIds` match entity nodes;
+            `mentionedDate`, `amount`, `quantity` and `percent` match typed values the record
+            mentions (any date mentioned, not a role such as "signed on"). A kind of a typed
+            constraint's own kind narrows it (`currency` with `amount`); other kinds are a
+            constraint of their own. Only records the caller may read are considered: every empty
+            result reads the same.
+
+            An unusable filter (unknown kind, bad currency, a range whose low end is above its high
+            end, or a blank name) fails request validation with 400, including on conversation
+            requests. On `POST /search`, a valid filter matching too many readable records is
+            refused with 422. Conversation operations apply a valid filter to every search behind
+            the answer; if retrieval refuses it, the request does not fail and the answer says why
+            the filter could not be applied.
+          properties:
+            kinds:
+              type: array
+              minItems: 1
+              maxItems: 23
+              description: Lowercase, as listed. The server trims and lowercases each kind before checking it.
+              items:
+                title: NamedEntityKind
+                type: string
+                enum:
+                - person
+                - person_type
+                - organization
+                - event
+                - product
+                - skill
+                - location
+                - city
+                - state
+                - country_region
+                - address
+                - date
+                - date_range
+                - date_time
+                - duration
+                - currency
+                - percentage
+                - age
+                - dimension
+                - email
+                - url
+                - phone
+                - ip
+            name:
+              type: string
+              minLength: 1
+              maxLength: 256
+              description: Case-insensitive prefix of an entity name; surrounding blanks are trimmed and a blank name is refused.
+            entityIds:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                type: string
+                format: uuid
+              description: Entity node ids, as returned by entity search. Typed values have no id.
+            mentionedDate:
+              type: object
+              additionalProperties: false
+              description: Overlap with a date the record mentions; half-open, `from` must not be after `to`.
+              properties:
+                from:
+                  oneOf:
+                  - type: integer
+                    description: Epoch milliseconds.
+                  - type: string
+                    description: ISO-8601 date or date-time; a date alone is UTC midnight.
+                to:
+                  oneOf:
+                  - type: integer
+                    description: Epoch milliseconds.
+                  - type: string
+                    description: ISO-8601 date or date-time; a date alone is UTC midnight.
+            amount:
+              type: object
+              additionalProperties: false
+              description: '`min` must not be after `max`.'
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+                currency:
+                  type: string
+                  pattern: ^[A-Za-z]{3}$
+                  description: ISO 4217 code, case-insensitive.
+            quantity:
+              type: object
+              additionalProperties: false
+              description: In SI units of the dimension. `min` must not be after `max`.
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+                dimension:
+                  type: string
+                  pattern: ^[A-Za-z_]{1,32}$
+                  description: For example `length`, `weight`, `speed`, `temperature`, `age`.
+            percent:
+              type: object
+              additionalProperties: false
+              description: Fractions (0.125 is 12.5%). `min` must not be after `max`.
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+        where:
+          description: Reserved for the typed filter tree that will replace `entityFilters`; any value is refused with 400.
+          not: {}
+          x-speakeasy-ignore: true
     AppliedFilterNode:
       type: object
       additionalProperties: false
@@ -4702,6 +5026,18 @@ components:
             that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: 'Opt in to measurement frames on this stream: CUSTOM `retrieval_context` events naming the records and blocks that reached the model, and one CUSTOM `run_usage` event carrying the run''s token totals and loop outcome. Identifiers only, never block text. Does not change the answer.'
+        keywordSearchBudget:
+          type: string
+          enum:
+          - short
+          - full
+          description: How long each search waits for the keyword (grep) match after its semantic results are in. `short` waits at most 5 seconds and keeps the keyword matches found by then, for callers that would rather answer sooner, such as agents calling chat over MCP. `full`, or leaving it out, waits for all of it. Deployments running `HIGH_ACCURACY_MODE` always wait in full.
+        toolApproval:
+          $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
           type: string
           format: uuid
@@ -4905,6 +5241,18 @@ components:
             send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: 'Opt in to measurement frames on this stream: CUSTOM `retrieval_context` events naming the records and blocks that reached the model, and one CUSTOM `run_usage` event carrying the run''s token totals and loop outcome. Identifiers only, never block text. Does not change the answer.'
+        keywordSearchBudget:
+          type: string
+          enum:
+          - short
+          - full
+          description: How long each search waits for the keyword (grep) match after its semantic results are in. `short` waits at most 5 seconds and keeps the keyword matches found by then, for callers that would rather answer sooner, such as agents calling chat over MCP. `full`, or leaving it out, waits for all of it. Deployments running `HIGH_ACCURACY_MODE` always wait in full.
+        toolApproval:
+          $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
           type: string
           format: uuid
@@ -5032,6 +5380,8 @@ components:
             compatibility with callers that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        toolApproval:
+          $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
           type: string
           format: uuid
@@ -5137,6 +5487,18 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: 'Opt in to measurement frames on this stream: CUSTOM `retrieval_context` events naming the records and blocks that reached the model, and one CUSTOM `run_usage` event carrying the run''s token totals and loop outcome. Identifiers only, never block text. Does not change the answer.'
+        keywordSearchBudget:
+          type: string
+          enum:
+          - short
+          - full
+          description: How long each search waits for the keyword (grep) match after its semantic results are in. `short` waits at most 5 seconds and keeps the keyword matches found by then, for callers that would rather answer sooner, such as agents calling chat over MCP. `full`, or leaving it out, waits for all of it. Deployments running `HIGH_ACCURACY_MODE` always wait in full.
+        toolApproval:
+          $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
           type: string
           format: uuid
@@ -5304,6 +5666,18 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: 'Opt in to measurement frames on this stream: CUSTOM `retrieval_context` events naming the records and blocks that reached the model, and one CUSTOM `run_usage` event carrying the run''s token totals and loop outcome. Identifiers only, never block text. Does not change the answer.'
+        keywordSearchBudget:
+          type: string
+          enum:
+          - short
+          - full
+          description: How long each search waits for the keyword (grep) match after its semantic results are in. `short` waits at most 5 seconds and keeps the keyword matches found by then, for callers that would rather answer sooner, such as agents calling chat over MCP. `full`, or leaving it out, waits for all of it. Deployments running `HIGH_ACCURACY_MODE` always wait in full.
+        toolApproval:
+          $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
           type: string
           format: uuid
@@ -6671,6 +7045,36 @@ components:
           maximum: 100
           default: 10
           description: Maximum number of results to return
+        createdAfter:
+          type: string
+          maxLength: 64
+          description: |
+            Only records the source created on or after this date. `YYYY-MM-DD` (the whole
+            day, UTC) or an ISO 8601 datetime with a timezone offset. A date that is not
+            one of these, or in the future, is a `400` that says why.
+          example: '2026-01-01'
+        createdBefore:
+          type: string
+          maxLength: 64
+          description: |
+            Only records the source created on or before this date. A `YYYY-MM-DD` value
+            includes that whole day.
+          example: '2026-03-31'
+        modifiedAfter:
+          type: string
+          maxLength: 64
+          description: |
+            Only records last changed in the source on or after this date. Same format as
+            `createdAfter`.
+          example: '2026-09-01'
+        modifiedBefore:
+          type: string
+          maxLength: 64
+          description: |
+            Only records last changed in the source on or before this date. Same format as
+            `createdBefore`. Records with no source date are left out whenever a bound on
+            that date is set.
+          example: '2026-09-30T23:59:59Z'
     SemanticSearchBoundingBox:
       type: object
       additionalProperties: false
@@ -6874,6 +7278,14 @@ components:
         block_index:
           type: integer
           nullable: true
+        distanceFromMatch:
+          type: integer
+          minimum: 0
+          description: |
+            Set on a passage returned because a match inside its section (a thread, a list,
+            a table) brought the whole section back: how many blocks it sits from the passage
+            the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
+            directly or the section matched as a whole.
     SemanticSearchGraphRecord:
       type: object
       description: |
@@ -7081,6 +7493,16 @@ components:
           type: string
         appliedFilters:
           $ref: '#/components/schemas/SemanticSearchAppliedFilters'
+        omittedPassages:
+          type: object
+          description: |
+            Present only when some records lost passages to the per-record cap: maps a
+            `recordId` to how many of its passages were left out. Each record keeps at most
+            `max(SEARCH_PER_RECORD_FLOOR, limit / SEARCH_PER_RECORD_DIVISOR)` passages
+            (4 at the default limit): the passages that matched first, then those nearest a match.
+          additionalProperties:
+            type: integer
+            minimum: 1
         virtual_to_record_map:
           type: object
           description: Maps virtual record id (object property name) to the accessible graph record document for that id.
@@ -12253,6 +12675,16 @@ paths:
           - asc
           - desc
           default: desc
+      - name: ownership
+        in: query
+        description: Gallery tab. `mine` lists artifacts the caller owns, `shared` the ones shared with them.
+        schema:
+          type: string
+          enum:
+          - all
+          - mine
+          - shared
+          default: all
       responses:
         '200':
           description: Paginated artifact gallery
@@ -12343,6 +12775,173 @@ paths:
                       $ref: '#/components/schemas/ArtifactGalleryVersion'
         '401':
           description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /artifacts/{artifactId}/permissions:
+    get:
+      tags:
+      - Artifacts
+      summary: List who an artifact is shared with
+      description: The owner and the users the owner shared the artifact with directly. Users who can read it through a shared conversation are managed from that conversation. Only the owner may call this.
+      operationId: listArtifactMembers
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:read
+      parameters:
+      - name: artifactId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+      responses:
+        '200':
+          description: Artifact members
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactMember'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller does not own the artifact
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /artifacts/{artifactId}/share:
+    post:
+      tags:
+      - Artifacts
+      summary: Share an artifact
+      description: Give users of the caller's organization read access (view and download, including later versions) and notify them. Only the owner may share. Users who already have direct access are skipped.
+      operationId: shareArtifact
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:write
+      parameters:
+      - name: artifactId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactShareRequest'
+      responses:
+        '200':
+          description: Number of users whose access changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shared:
+                    type: integer
+        '400':
+          description: A user ID is invalid or the user is not in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller does not own the artifact, or lacks the OAuth scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /artifacts/{artifactId}/unshare:
+    post:
+      tags:
+      - Artifacts
+      summary: Stop sharing an artifact
+      description: Remove the read access the owner gave users directly. Access through a shared conversation is not affected.
+      operationId: unshareArtifact
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - kb:write
+      parameters:
+      - name: artifactId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactShareRequest'
+      responses:
+        '200':
+          description: Number of users whose access changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unshared:
+                    type: integer
+        '400':
+          description: A user ID is invalid or the user is not in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller does not own the artifact, or lacks the OAuth scope
           content:
             application/json:
               schema:
@@ -12969,11 +13568,14 @@ paths:
         - Updates `updatedAtTimestamp`
         - Increments version if file content changed
         - Triggers re-indexing for content changes
+
+        **OAuth scopes:** `kb:write`, plus `kb:read`: replacing the file first reads the record and its knowledge base with the caller's token.
       operationId: updateRecord
       security:
       - bearerAuth: []
       - oauth2:
         - kb:write
+        - kb:read
       parameters:
       - name: recordId
         in: path
@@ -13025,7 +13627,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: OAuth token is missing the required kb:write scope
+          description: OAuth token is missing `kb:write`, or `kb:read` when a replacement file is sent.
           content:
             application/json:
               schema:
@@ -18348,11 +18950,15 @@ paths:
         Requires editor access. `visibility` and `chatSharing` are
         owner-only fields — including either as a non-owner editor
         returns `403`.
+
+        **OAuth scopes:** `project:write`, plus `kb:write` (`visibility: org`) or `kb:delete` (`visibility: private`) to update access on the project's knowledge base when it has one. The project is saved before that call, so a token without them gets `403` with the change already saved.
       operationId: updateProject
       security:
       - bearerAuth: []
       - oauth2:
         - project:write
+        - kb:write
+        - kb:delete
       parameters:
       - name: projectId
         in: path
@@ -18384,7 +18990,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Caller can see the project but has only viewer access, or has editor (not owner) access and the request includes `visibility` or `chatSharing`.
+          description: Caller can see the project but has only viewer access, or has editor (not owner) access and the request includes `visibility` or `chatSharing`. Also when `visibility` changes on a project with a knowledge base and the OAuth token lacks `kb:write` (`org`) or `kb:delete` (`private`); the project is already saved by then.
         '404':
           description: Project not found or not visible to the caller.
     delete:
@@ -18398,11 +19004,14 @@ paths:
         a deleted project; wrapped in a transaction when the deployment's
         replica set supports it. Idempotent — deleting an already-deleted
         project returns `200` without re-running the unlink step.
+
+        **OAuth scopes:** `project:delete`, plus `kb:delete` to delete the project's knowledge base when it has one; without it the delete answers `403` and the project stays.
       operationId: deleteProject
       security:
       - bearerAuth: []
       - oauth2:
         - project:delete
+        - kb:delete
       parameters:
       - name: projectId
         in: path
@@ -18423,7 +19032,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Caller has access but is not the owner.
+          description: Caller has access but is not the owner. Also when the project has a knowledge base and the OAuth token lacks `kb:delete`; the project is not deleted.
         '404':
           description: Project not found or not visible to the caller.
   /projects/{projectId}/archive:
@@ -18654,11 +19263,16 @@ paths:
         always included in this project's own chat scope
         (`filters.kb`) and file uploads go through the normal
         `POST /knowledgeBase/{kbId}/upload` SSE pipeline afterward.
+
+        **OAuth scopes:** `project:write`, plus `kb:write` to create the knowledge base and grant the project's members on it, `kb:read` to check that a linked knowledge base still exists (without it the check is refused, the call still answers `200` with the stored id, and a deleted knowledge base is not recreated), and `kb:delete` to delete the losing request's knowledge base after a race. These knowledge base calls carry the caller's token.
       operationId: ensureProjectKnowledgeBase
       security:
       - bearerAuth: []
       - oauth2:
         - project:write
+        - kb:write
+        - kb:read
+        - kb:delete
       parameters:
       - name: projectId
         in: path
@@ -18682,7 +19296,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Caller can see the project but has only viewer access; this action needs editor.
+          description: Caller can see the project but has only viewer access; this action needs editor. Also when the OAuth token lacks `kb:write`, needed to create the knowledge base and grant the members on it.
         '404':
           description: Project not found or not visible to the caller.
   /projects/{projectId}/members:
@@ -18730,11 +19344,15 @@ paths:
         `POST /conversations/{conversationId}/share` — a `principalId` with
         no matching user returns `400`. Upserts by `principalId`; the owner
         is silently skipped if included.
+
+        **OAuth scopes:** `project:write`, plus `user:read` to look up each user with the caller's token (without it every user answers `400` "User not found"), and `kb:write` to grant the members on the project's knowledge base when it has one.
       operationId: upsertProjectMembers
       security:
       - bearerAuth: []
       - oauth2:
         - project:write
+        - user:read
+        - kb:write
       parameters:
       - name: projectId
         in: path
@@ -18762,11 +19380,11 @@ paths:
                     items:
                       $ref: '#/components/schemas/ProjectMember'
         '400':
-          description: A `principalId` does not exist in this org's IAM service.
+          description: A `principalId` does not exist in this org's IAM service. Also returned for every user when the OAuth token lacks `user:read`, because the user lookup is refused.
         '401':
           description: Unauthorized
         '403':
-          description: Caller has access but is not the owner.
+          description: Caller has access but is not the owner. Also when the project has a knowledge base and the OAuth token lacks `kb:write`.
         '404':
           description: Project not found or not visible to the caller.
   /projects/{projectId}/members/{memberUserId}:
@@ -18774,12 +19392,16 @@ paths:
       tags:
       - Projects
       summary: Remove a project member
-      description: Owner-only.
+      description: |
+        Owner-only.
+
+        **OAuth scopes:** `project:write`, plus `kb:delete` to revoke the member on the project's knowledge base when it has one. The member is removed from the project before that call, so a token without `kb:delete` gets `403` with the member already removed.
       operationId: removeProjectMember
       security:
       - bearerAuth: []
       - oauth2:
         - project:write
+        - kb:delete
       parameters:
       - name: projectId
         in: path
@@ -18821,7 +19443,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Caller has access but is not the owner.
+          description: Caller has access but is not the owner. Also when the project has a knowledge base and the OAuth token lacks `kb:delete`; the member is already removed by then.
         '404':
           description: Project not found or not visible to the caller.
   /search:
@@ -18872,7 +19494,12 @@ paths:
         '400':
           description: |
             Invalid request — `query` is missing, empty, or the request
-            body fails validation.
+            body fails validation, including an unusable
+            `filters.entityFilters` or any `filters.where`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: |
             Missing or invalid bearer token.
@@ -18883,6 +19510,14 @@ paths:
           description: |
             A referenced knowledge base or app filter could not be
             resolved.
+        '422':
+          description: |
+            `filters.entityFilters` matches too many records the caller can
+            read. Narrow it: a tighter range, a name, or fewer kinds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Unexpected server error while executing the search, or the
@@ -21596,6 +22231,19 @@ paths:
         full content when the search snippet or citation excerpt isn't
         enough to answer the question.
 
+        **Reading part of a long record, or a whole Slack thread:**
+
+        With no query parameters the whole record is returned, which for a
+        pull request with its diffs or a long document can run to hundreds of
+        thousands of characters. Pass any of `maxChars`, `startBlock`, `query`
+        or `mode` for a budgeted read instead: the response stays within
+        `maxChars` and says how to continue (`nextStartBlock`, or
+        `nextStartRecord` for a thread). `query` makes a record too large for
+        the budget show its most relevant blocks first, with the skipped
+        ranges marked. `mode=thread` returns every message of the Slack
+        thread the record belongs to, oldest first, as far as the caller may
+        see them.
+
         **Permission scoping:**
 
         The requesting user/token must have access to the record; access is
@@ -21614,12 +22262,55 @@ paths:
         description: Record ID to fetch. Obtain it from a `pipeshub_search` result (`hits[*].recordId`) or a chat citation (`citations[*].recordId`).
         schema:
           type: string
+      - name: maxChars
+        in: query
+        required: false
+        description: Most characters of `content` to return. Asks for a budgeted read; 40000 when another budgeted-read parameter is given without it.
+        schema:
+          type: integer
+          minimum: 2000
+          maximum: 140000
+      - name: startBlock
+        in: query
+        required: false
+        description: 'Read in order from this block: the `nextStartBlock` of a previous read, or 0 for the top. Takes precedence over `query`. In thread mode it applies to the record at `startRecord`; later records are read from their start.'
+        schema:
+          type: integer
+          minimum: 0
+      - name: query
+        in: query
+        required: false
+        description: What you are looking for in the record. When the record does not fit in `maxChars`, the blocks most relevant to it are shown first and the skipped ranges are marked.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 2000
+      - name: mode
+        in: query
+        required: false
+        description: '`record` (default) reads this record. `thread` reads every record of the Slack thread this message belongs to, oldest first; a record outside any thread answers `422`.'
+        schema:
+          type: string
+          enum:
+          - record
+          - thread
+      - name: startRecord
+        in: query
+        required: false
+        description: 'Thread mode: start at this record of the thread, the `nextStartRecord` of a previous read. Pass the read''s `nextStartBlock` with it.'
+        schema:
+          type: integer
+          minimum: 0
       responses:
         '200':
           description: |
-            Successful operation. When the record has no available content
-            (e.g. not indexed), `content` is the literal `No record found`
-            rather than an error status.
+            Successful operation. When the record exists but its content is
+            not indexed yet, `content` describes the record (name, link,
+            dates) and ends with a `Not indexed:` paragraph naming its
+            indexing status. When the record is indexed but its stored
+            content could not be loaded, `content` is the literal
+            `No record found`. Neither is an error status. An id that does
+            not exist, or a record the caller may not read, answers `403`.
           content:
             application/json:
               schema:
@@ -21634,6 +22325,14 @@ paths:
           description: |
             OAuth token is missing the `connector:read` scope, or the
             authenticated user does not have access to this record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            `mode=thread` was asked of a record that is not part of a Slack
+            thread.
           content:
             application/json:
               schema:
@@ -22316,6 +23015,8 @@ paths:
       - bearerAuth: []
       - oauth2:
         - config:read
+      parameters:
+      - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Web search providers and settings retrieved
