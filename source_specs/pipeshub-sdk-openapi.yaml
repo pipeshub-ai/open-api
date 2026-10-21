@@ -21,6 +21,9 @@ info:
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
+
+    ## Query parameter names
+    On every `/api/v1` and `/mcp` endpoint, a query parameter whose name starts with `$` or contains `.` (including a nested name such as `filter[$ne]` or `a.b`) is refused with `400` and error code `VALIDATION_ERROR`. Only names are checked: values may contain dots, such as file names.
   version: 1.0.0
   contact:
     name: API Support
@@ -924,11 +927,17 @@ components:
           - authorization_code
           - client_credentials
           - refresh_token
+          - urn:ietf:params:oauth:grant-type:token-exchange
           description: |
             OAuth grant type:
             - `authorization_code`: Exchange auth code for tokens
             - `client_credentials`: Machine-to-machine auth
             - `refresh_token`: Get new access token using refresh token
+            - `urn:ietf:params:oauth:grant-type:token-exchange`: Service-account
+              delegation (RFC 8693). Exchanges a service token for a
+              short-lived token that acts as one named person. Enterprise
+              edition; kept in this enum because the request shape is the same
+              wherever the grant is offered.
         code:
           type: string
           description: Authorization code (required for authorization_code grant)
@@ -954,6 +963,26 @@ components:
             PKCE code verifier (RFC 7636). Required if code_challenge was used.
             Must be 43-128 characters from [A-Za-z0-9-._~]
           pattern: ^[A-Za-z0-9\-._~]{43,128}$
+        subject_token:
+          type: string
+          maxLength: 8192
+          description: |
+            The service token being exchanged (token-exchange grant only).
+            This is the only authentication the grant has: no `client_id` or
+            `client_secret` is sent, because the service token already carries
+            a verified identity and the scopes that bound it.
+        subject_token_type:
+          type: string
+          description: |
+            Optional. Must be `urn:ietf:params:oauth:token-type:access_token`
+            when sent (token-exchange grant only).
+        requested_subject:
+          type: string
+          maxLength: 320
+          description: |
+            The person to act as, by user id or email address (token-exchange
+            grant only). Must be on the service account's allow-list, and must
+            not be an administrator.
       required:
       - grant_type
     OAuthTokenResponse:
@@ -982,6 +1011,13 @@ components:
         id_token:
           type: string
           description: OpenID Connect ID token (JWT) if openid scope was requested
+        issued_token_type:
+          type: string
+          description: |
+            The type of the issued token (RFC 8693 Section 2.2.1). Returned by
+            the token-exchange grant, where it is always
+            `urn:ietf:params:oauth:token-type:access_token`.
+          example: urn:ietf:params:oauth:token-type:access_token
     OAuthRevokeRequest:
       type: object
       description: |
@@ -1091,10 +1127,16 @@ components:
             - `unsupported_grant_type` - Grant type not supported
             - `invalid_scope` - Requested scope is invalid or exceeds allowed
             - `access_denied` - User denied authorization
+            - `invalid_target` - The requested subject cannot be acted as
+              (RFC 8693). Returned by the token-exchange grant for every
+              refusal about the person asked for, with one wording, so a
+              service token cannot tell "no such person" from "not on your
+              list". The real cause is in the delegation log.
           enum:
           - invalid_request
           - invalid_client
           - invalid_grant
+          - invalid_target
           - unauthorized_client
           - unsupported_grant_type
           - invalid_scope
@@ -2433,6 +2475,7 @@ components:
       - AZURE FILES
       - LINEAR
       - ZAMMAD
+      - ZENDESK
       - ZOOM
       - GITLAB
       - GITLAB PERSONAL
@@ -2557,6 +2600,14 @@ components:
             - AUTO_INDEX_OFF: Auto-indexing disabled for this record
             - EMPTY: File has no extractable content
           example: COMPLETED
+        hasIndexedCopy:
+          type: boolean
+          description: |
+            True after the record is indexed (every COMPLETED write, including the upgrade
+            backfill for records indexed earlier), and false once it is marked EMPTY. A later
+            re-queue or a failed re-index leaves it as it is, so search keeps returning the
+            previous indexed copy until the new version is indexed. Absent until the first
+            COMPLETED or EMPTY write sets it.
         indexingStatus:
           type: string
           enum:
@@ -2745,6 +2796,18 @@ components:
                 chain. A group with no parent is its own root, so this is null
                 only for records written before the field existed, or by
                 connectors that do not set it.
+            accessRule:
+              type: string
+              enum:
+              - OPEN
+              - STRICT
+              - RESTRICTED
+              description: |
+                How this record's own permissions combine with its ancestors'.
+                OPEN: an accessible parent, or a direct grant, is enough.
+                STRICT: every ancestor up to the connector must be accessible too.
+                RESTRICTED: strict, and a grant on the record itself is required.
+                Absent on records written before the field existed; read as OPEN.
             uploadedBy:
               type: string
               nullable: true
@@ -2800,6 +2863,14 @@ components:
               nullable: true
             indexingStatus:
               type: string
+            hasIndexedCopy:
+              type: boolean
+              description: |
+                True after the record is indexed (every COMPLETED write, including the upgrade
+                backfill for records indexed earlier), and false once it is marked EMPTY. A later
+                re-queue or a failed re-index leaves it as it is, so search keeps returning the
+                previous indexed copy until the new version is indexed. Absent until the first
+                COMPLETED or EMPTY write sets it.
             extractionStatus:
               type: string
             reason:
@@ -3211,6 +3282,22 @@ components:
           description: Thread reads only. Records of the thread the caller may see whose content could not be loaded.
           items:
             type: string
+        threads:
+          type: array
+          description: Thread reads of a Slack record in no single thread only (several channel messages in one record, or a message without replies). The threads its messages started whose replies follow it in `records`, in the order their first messages were posted; empty when none of its messages has replies the caller may see.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              threadRecordGroupId:
+                type: string
+                description: The thread's record group.
+              recordCount:
+                type: integer
+                description: Replies of this thread the caller may see.
+        threadsNotRead:
+          type: integer
+          description: Thread reads of a Slack record in no single thread only. Threads of its messages left out because one read covers at most 10.
         chars:
           type: integer
           description: Budgeted reads only. Characters in `content`.
@@ -4341,6 +4428,26 @@ components:
               type: boolean
             hasPrev:
               type: boolean
+            nextCursor:
+              type: string
+              nullable: true
+              description: Cursor for the next page; null on the last page.
+            prevCursor:
+              type: string
+              nullable: true
+              description: Cursor for the previous page; null on the first page.
+            startIndex:
+              type: integer
+              nullable: true
+              description: 1-based index of the first item on this page, when known.
+            endIndex:
+              type: integer
+              nullable: true
+              description: 1-based index of the last item on this page, when known.
+            currentPageItems:
+              type: integer
+              nullable: true
+              description: Number of items on this page.
         filters:
           type: object
           required:
@@ -4551,27 +4658,65 @@ components:
       type: object
       additionalProperties: false
       description: |
-        App connector instance ids and knowledge-base / record-group ids that narrow retrieval
-        for a turn. For **org assistant** chat streams, send explicit `apps` / `kb` lists.
-        For **agent** chat streams, send explicit id lists, or **omit** `filters` (and `tools`)
-        to let the service use the agent’s stored knowledge and tool configuration. Sending
-        `{ "apps": [], "kb": [] }` on an agent stream means **no** knowledge sources for that
-        turn (it is not “full org default”).
+        What retrieval is narrowed to for a turn: whole apps, and selections below app
+        level (record groups, folders, records). The keys are a union. For **org assistant**
+        chat streams, send explicit lists. For **agent** chat streams, send explicit id lists,
+        or **omit** `filters` (and `tools`) to let the service use the agent’s stored knowledge
+        and tool configuration. Sending `{ "apps": [], "kb": [] }` on an agent stream means
+        **no** knowledge sources for that turn (it is not “full org default”).
+
+        A selection below app level is the whole scope of the turn: with `recordGroups`,
+        `records` or `recordsExact` present, an absent or empty `apps` / `kb` means none of
+        them. A selected node that does not exist or that the caller cannot read contributes
+        nothing; when nothing valid remains the turn searches nothing. `/search` answers 404
+        for that; a chat turn is not failed, its search simply finds nothing.
+        At most 200 ids may be sent in one request, counted across all keys, and every id must
+        be a valid UUID. A key this schema does not list is ignored by the gateway rather than
+        refused.
+
+        A selection that covers more than the configured number of nodes (50,000 by default),
+        or that touches a source still being prepared for folder-level search, is refused:
+        `/search` and the non-streaming chat routes answer 422 with the message, and a chat
+        stream ends with an error frame (`RUN_ERROR`, or `error` on the legacy protocol)
+        whose `code` is `selection_too_large` or `selection_not_ready` and whose `message`
+        says what to change. No model call is made for such a turn.
       properties:
         apps:
           type: array
           items:
             type: string
           description: |
-            Connector instance ids to scope retrieval for this turn. Each element
-            must be a valid UUID (connector app id, KB app id, record-group id, etc.).
-            Gateway validation matches Zod `appOrKbIdSchema`.
+            Whole apps: connector instance ids and collection (knowledge base) ids.
+            Each element must be a valid UUID.
         kb:
           type: array
           items:
             type: string
           description: |
-            Knowledge-base app ids to scope retrieval for this turn.
+            Older name for collection ids; treated the same as `apps`.
+            Each element must be a valid UUID.
+        recordGroups:
+          type: array
+          items:
+            type: string
+          description: |
+            Record group ids (a drive, a space, a project). Each selects the group, the
+            groups nested in it and every record that belongs to them.
+            Each element must be a valid UUID.
+        records:
+          type: array
+          items:
+            type: string
+          description: |
+            Folder or record ids. Each selects the node and everything under it
+            (child items and attachments).
+            Each element must be a valid UUID.
+        recordsExact:
+          type: array
+          items:
+            type: string
+          description: |
+            Record ids selected alone, without what is under them.
             Each element must be a valid UUID.
         entityFilters:
           type: object
@@ -4712,6 +4857,15 @@ components:
         connector:
           type: string
           description: Connector identifier associated with this node
+        extension:
+          type: string
+          description: File extension of a record node, for its icon
+        mimeType:
+          type: string
+          description: MIME type of a record node, for its icon
+        mentioned:
+          type: boolean
+          description: True when the node was picked with an @ mention in the message
     AppliedFilters:
       type: object
       additionalProperties: false
@@ -4730,6 +4884,21 @@ components:
           items:
             $ref: '#/components/schemas/AppliedFilterNode'
           description: Applied knowledge-base filter nodes
+        recordGroups:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied record-group filter nodes
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied folder and record filter nodes (each with everything under it)
+        recordsExact:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied record filter nodes selected alone
     ChatAttachmentRef:
       type: object
       additionalProperties: false
@@ -4939,7 +5108,8 @@ components:
             Optional list of tool identifiers (fully-qualified action names such as
             "jira.create_issue") that the AI agent is permitted to invoke for this
             request. When omitted the agent may use any configured tool. Applicable
-            only when `chatMode` is `agent`.
+            only when `chatMode` is `agent`. Web search is not governed by this
+            list; `agentCapabilities.webSearch` turns it on or off.
           example:
           - jira.create_issue
           - confluence.search_content
@@ -5157,7 +5327,8 @@ components:
           description: |
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
-            tools for this turn.
+            tools for this turn. A list that leaves out `web_search` turns off
+            the agent's web search for the turn.
         protocol:
           type: string
           enum:
@@ -5294,7 +5465,13 @@ components:
           description: |
             Optional list of tool identifiers (fully-qualified action names
             such as `jira.create_issue`) the agent may invoke when
-            regenerating. Applicable only in agent chat modes.
+            regenerating. Applicable only in agent chat modes. Regenerating
+            in the assistant's agent mode, web search is not governed by this
+            list; `agentCapabilities.webSearch` turns it on or off.
+            Regenerating a named agent's message (`AgentRegenerateRequest`),
+            a list that leaves out `web_search` turns off the agent's web
+            search for the turn, even when `agentCapabilities.webSearch` is
+            true.
           example:
           - jira.create_issue
           - confluence.search_content
@@ -5582,7 +5759,8 @@ components:
           description: |
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
-            tools for this turn.
+            tools for this turn. A list that leaves out `web_search` turns off
+            the agent's web search for the turn.
         protocol:
           type: string
           enum:
@@ -6610,6 +6788,13 @@ components:
           - read
           - write
           readOnly: true
+        isPinned:
+          type: boolean
+          description: |
+            `true` when the owner pinned this conversation. Absent on
+            conversations that are not pinned (never `false`). Set via
+            `PATCH /conversations/{conversationId}/pin`. Only returned to the
+            owner: lists with `source=shared` omit it.
         projectId:
           type: string
           format: objectId
@@ -6631,6 +6816,90 @@ components:
             `PATCH /conversations/{conversationId}/project-visibility`.
         sharedBy:
           $ref: '#/components/schemas/ConversationSharedBy'
+    ConversationPinResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - isPinned
+      - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: Conversation identifier
+        isPinned:
+          type: boolean
+          description: The conversation's pin state after the call.
+        meta:
+          type: object
+          additionalProperties: false
+          properties:
+            requestId:
+              type: string
+              description: Request correlation identifier
+            timestamp:
+              type: string
+              format: date-time
+              description: Response generation timestamp
+            duration:
+              type: integer
+              description: Server processing time in milliseconds
+    ForkConversationResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - title
+      - forkedFrom
+      - messageCount
+      - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: New conversation identifier
+        title:
+          type: string
+          description: Title of the forked conversation
+        projectId:
+          type: string
+          format: objectId
+          description: |
+            Project the fork is linked to. Present only when the source conversation
+            belonged to a project that the caller can still view; otherwise omitted.
+        forkedFrom:
+          type: object
+          additionalProperties: false
+          required:
+          - conversationId
+          - messageId
+          properties:
+            conversationId:
+              type: string
+              format: objectId
+            messageId:
+              type: string
+              format: objectId
+        messageCount:
+          type: integer
+          minimum: 0
+          description: Number of messages copied into the new conversation
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - timestamp
+          - duration
+          properties:
+            requestId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+            duration:
+              type: integer
+              description: Server-side processing time in milliseconds
     SemanticSearchRequest:
       type: object
       description: |
@@ -6646,6 +6915,14 @@ components:
         **Filtering:**
 
         Use filters to narrow search scope to specific apps or knowledge bases.
+
+        **Date bounds** (`createdAfter`, `createdBefore`, `modifiedAfter`, `modifiedBefore`)
+        match when a record was written or last changed, not when an event it describes
+        happened. With any of them set, and while the server's `DATE_FILTER_SAFETY_NET` setting
+        is on (the default), the same search also runs once without dates, and its best matches
+        that the bounds left out come back apart from the results, in
+        `searchResponse.outsideDates`. With the setting off, no such search runs and
+        `outsideDates` is omitted.
       required:
       - query
       properties:
@@ -6694,6 +6971,45 @@ components:
             `createdBefore`. Records with no source date are left out whenever a bound on
             that date is set.
           example: '2026-09-30T23:59:59Z'
+        rewriteQuery:
+          type: boolean
+          default: true
+          description: |
+            Whether the AI model rewrites the query and adds expanded variants before
+            searching. Set it to `false` to search the query exactly as sent, with no
+            model call: faster, and suited to callers that write their own queries, such
+            as an agent. The results can differ from a search with the rewrite.
+          example: false
+        timeline:
+          type: string
+          enum:
+          - created
+          - modified
+          - 'off'
+          description: |
+            Search a span of time period by period instead of ranking matches over the whole
+            span, for questions such as "how did this evolve" or "what changed between March
+            and May". A plain search returns the best matches overall, which bunch around one
+            moment; a timeline splits the span into up to 6 periods (calendar months, or weeks
+            within one month), searches each period on its own and beside one search of the
+            whole span, and returns the matches in date order, each labelled with its period.
+
+            The value is the date records are placed by: `created` (when the record was
+            created at its source) or `modified` (its last change). The span is that date's
+            bounds (`createdAfter` / `createdBefore`, or `modifiedAfter` / `modifiedBefore`);
+            with no start it covers the year before the end, or further back to the earliest
+            of the best matches. Bounds on the other date apply to every period. `limit` is the
+            number of matches each period's own search asks for (10 when left out); matches from
+            the search of the whole span (up to 50) are added to the periods their records are
+            dated in, so a period can hold more than `limit`. Each search applies the same permissions
+            and filters as a plain search.
+
+            Left out, a search whose bounds on one date have a start and cover more than 31
+            days (a missing end is today) runs as a timeline on that date, and
+            `timeline.automatic` is `true`; any other search is a plain ranked search. `off`
+            is always a plain ranked search. A server whose `TIMELINE_SUMMARIES` setting is
+            `false` ignores the field and never runs a timeline.
+          example: created
     SemanticSearchBoundingBox:
       type: object
       additionalProperties: false
@@ -6739,6 +7055,10 @@ components:
         connectorId:
           type: string
           nullable: true
+        connectorInstanceName:
+          type: string
+          nullable: true
+          description: The name the admin gave the connector instance; `connector` is only its type.
         connectorName:
           type: string
           nullable: true
@@ -6905,6 +7225,12 @@ components:
             a table) brought the whole section back: how many blocks it sits from the passage
             the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
             directly or the section matched as a whole.
+        timelinePeriod:
+          type: integer
+          minimum: 0
+          description: |
+            Set only on a search with `timeline`: the index in `timeline.periods` of the period
+            this hit's record is dated in.
     SemanticSearchGraphRecord:
       type: object
       description: |
@@ -7068,6 +7394,49 @@ components:
         rowCount:
           type: number
           nullable: true
+        statusSummary:
+          type: string
+          description: |
+            Where a ticket, pull request or project stands, in one short phrase, on
+            `records` entries only: for example `Merged 2026-09-25 by alice`,
+            `Closed without merging 2026-09-26`, or
+            `DONE (Jira: Done), resolved 2026-06-06, assignee Bo, priority HIGH`.
+            Dates are days in UTC. Absent for record types with no state of their own.
+        linkedRecords:
+          type: array
+          description: |
+            On `records` entries only: the records that name this one (`mentionedIn`) and
+            that it names (`linksTo`) by web address or issue key, across connectors,
+            limited to records the caller may read, at most 10 per relation. Absent when
+            there are none.
+          items:
+            $ref: '#/components/schemas/SemanticSearchLinkedRecord'
+    SemanticSearchLinkedRecord:
+      type: object
+      additionalProperties: false
+      required:
+      - relation
+      - recordId
+      - recordName
+      - recordType
+      - connector
+      properties:
+        relation:
+          type: string
+          enum:
+          - mentionedIn
+          - linksTo
+        recordId:
+          type: string
+        recordName:
+          type: string
+        recordType:
+          type: string
+        connector:
+          type: string
+        status:
+          type: string
+          description: The linked record's `statusSummary`, when it has one.
     SemanticSearchAppliedFilters:
       type: object
       additionalProperties: false
@@ -7127,6 +7496,119 @@ components:
           description: Maps virtual record id (object property name) to the accessible graph record document for that id.
           additionalProperties:
             $ref: '#/components/schemas/SemanticSearchGraphRecord'
+        timeline:
+          $ref: '#/components/schemas/SemanticSearchTimeline'
+        outsideDates:
+          $ref: '#/components/schemas/SemanticSearchOutsideDates'
+    SemanticSearchOutsideDates:
+      type: object
+      additionalProperties: false
+      description: |
+        Present only on a search with date bounds, when the same search without them found
+        matches the bounds left out. Date bounds match when a record was written or last changed,
+        not when the event it describes happened, so release notes, a retrospective or a weekly
+        summary written after a period are left out of a search bounded to that period. The
+        search without dates, with the same query, filters and permissions and a limit of 10,
+        runs beside the bounded search (or beside a timeline's searches: one plain search, not a
+        second timeline). Its best matches outside the bounds, up to 3 records, best first, come
+        here, never in `searchResults`, which are unchanged. When nothing inside the bounds
+        matched, the response is then a `200` with empty `searchResults`. A server whose
+        `DATE_FILTER_SAFETY_NET` setting is `false` never sends this field.
+      required:
+      - note
+      - searchResults
+      - records
+      properties:
+        note:
+          type: string
+          description: A plain-language label for these matches, to pass on with them.
+        searchResults:
+          type: array
+          description: Up to 3 passages of each record, best first.
+          items:
+            $ref: '#/components/schemas/SemanticSearchHit'
+        records:
+          type: array
+          description: The records, best first, with their source dates.
+          items:
+            $ref: '#/components/schemas/SemanticSearchGraphRecord'
+    SemanticSearchTimeline:
+      type: object
+      additionalProperties: false
+      description: |
+        Present only on a search run as a timeline: one with `timeline` set, or one over a span
+        of more than 31 days with it left out. `searchResults` then come period by period,
+        oldest first, and by record date within a period; each hit's `timelinePeriod` is its
+        period's index in `periods`.
+      required:
+      - dateField
+      - start
+      - end
+      - periods
+      - notes
+      properties:
+        dateField:
+          type: string
+          enum:
+          - created
+          - modified
+        automatic:
+          type: boolean
+          description: |
+            `true` when the caller left `timeline` out and the span was long enough to run as a
+            timeline; `false` when the caller asked for it.
+        start:
+          type: string
+          format: date
+          description: First day of the span searched.
+        end:
+          type: string
+          format: date
+          description: Last day of the span searched, inclusive.
+        periods:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticSearchTimelinePeriod'
+        notes:
+          type: array
+          items:
+            type: string
+          description: Plain-language notes on the span, such as the start chosen when none was given.
+    SemanticSearchTimelinePeriod:
+      type: object
+      additionalProperties: false
+      required:
+      - label
+      - start
+      - end
+      - records
+      - matches
+      properties:
+        label:
+          type: string
+          example: March 2026 (2026-03-01 to 2026-03-31)
+        start:
+          type: string
+          format: date
+          nullable: true
+          description: First day of the period. `null` for the last bucket, of matches whose record has no source date.
+        end:
+          type: string
+          format: date
+          nullable: true
+        records:
+          type: integer
+          minimum: 0
+          description: Records with matches in this period. `0` may only mean nothing matched this query then.
+        matches:
+          type: integer
+          minimum: 0
+        searchFailed:
+          type: boolean
+          description: This period's own search failed; any matches shown come from the search of the whole span.
+        searchIncomplete:
+          type: string
+          description: The search reached only part of the index for this period, so a record missing here may still exist.
     SemanticSearchExecuteResponse:
       type: object
       additionalProperties: false
@@ -7212,6 +7694,12 @@ components:
             The connector instance the record came from. `connector` names only
             the kind of source (for example `SLACK`), which several instances can
             share. Absent on citations saved before this field was stored.
+        connectorInstanceName:
+          type: string
+          nullable: true
+          description: |
+            The name the connector instance had when the answer was written.
+            Absent on citations saved before this field was stored.
         recordType:
           type: string
           nullable: true
@@ -7262,6 +7750,11 @@ components:
           nullable: true
           items:
             type: string
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the cited record was last updated at its source.
     PersistedSemanticSearchCitation:
       type: object
       additionalProperties: false
@@ -7828,20 +8321,47 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Indexed scope for a knowledge connector: record-group ids and
-        individual record ids. On GET, `filtersParsed` is this shape parsed
-        from the stored `filters` JSON string.
+        What a knowledge source is limited to. With both lists empty the agent
+        searches the whole source; otherwise it searches only the listed
+        record groups, folders and records, each with everything under it, and
+        a selection made in a chat must lie under them. On GET, `filtersParsed`
+        is this shape parsed from the stored `filters` JSON string.
+
+        On create and update, `filters` may be this object or its JSON text.
+        The two lists must hold valid UUIDs, at most 200 across both; a value
+        that cannot be read is refused with 400 rather than saved as "no
+        limit", and so is a limit that covers more nodes than one search may
+        (50,000 by default). A stored limit that cannot be read limits the
+        source to nothing.
       properties:
         recordGroups:
           type: array
           items:
             type: string
-          description: 'Deprecated/legacy: record-group ids for connector record-group scoping (e.g. Confluence spaces, Jira projects). No longer set for KB (Collection) entries — a KB is identified by its own `connectorId`, not by an id in this list.'
+          description: Record-group ids (e.g. Confluence spaces, Jira projects), each with the groups nested in it. Not set for KB (Collection) entries — a KB is identified by its own `connectorId`; an id equal to a source's `connectorId` is ignored.
         records:
           type: array
           items:
             type: string
-          description: Individual record ids in scope.
+          description: Folder or record ids, each with everything under it.
+        nodes:
+          type: array
+          description: Names of the ids above, for display. Not used for search.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - id
+            - name
+            - nodeType
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              nodeType:
+                type: string
+                description: '`recordGroup`, `folder` or `record`.'
     Toolset:
       type: object
       additionalProperties: false
@@ -10004,9 +10524,9 @@ components:
         SSE event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON object that
-        includes a `"type"` field matching `event`, plus type-specific
-        fields. Stable gateway-generated top-level outcomes:
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. Stable gateway-generated top-level outcomes:
 
         - `RUN_FINISHED` returns `{ type, result }` where
           `result` is `{ conversation, recordsUsed, meta }` — the updated
@@ -10446,6 +10966,30 @@ components:
         updatedAtTimestamp:
           type: integer
           description: Epoch milliseconds
+        lastSyncStartedAtTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms when the last sync run started; absent before the first run
+        lastSyncFinishedAtTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms when the last sync run ended, however it ended; absent until a run ends
+        lastSyncOutcome:
+          type: string
+          nullable: true
+          enum:
+          - succeeded
+          - failed
+          - stopped
+          - skipped
+          description: How the last sync run ended
+        lastSyncSummary:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: 'What the last run did, in the connector''s own terms. For a Web connector: pagesSaved (written this run), pagesStored (kept after it, which Maximum pages caps), pagesVisited, failed, failedByStatus, robotsSkipped, noindexSkipped, skippedMaxPages, deferred, pruned, sitemapUrls, stopReason (max_pages, time_limit, stalled, rate_limited or null) and resumed.'
         config:
           $ref: '#/components/schemas/ConnectorSchema'
     ConnectorConfig:
@@ -11008,6 +11552,7 @@ components:
       - imageGeneration
       - tts
       - stt
+      - decision
       description: Type of AI model
     WebSearchProviderType:
       type: string
@@ -11016,7 +11561,11 @@ components:
       - serper
       - tavily
       - exa
-      description: Supported web search provider
+      - brave
+      - searxng
+      - firecrawl
+      - crawl4ai
+      description: Supported web search provider. crawl4ai only reads pages (it backs up the built-in page reader) and cannot be the default; firecrawl both searches and reads pages. searxng, firecrawl and crawl4ai take a baseUrl; firecrawl defaults to its cloud API.
     WebSearchProviderItem:
       type: object
       additionalProperties: false
@@ -11036,7 +11585,8 @@ components:
           type: object
           description: |
             Provider-specific configuration as stored and returned by the gateway (open record).
-            Serper, Tavily, and Exa typically include `apiKey`; additional keys may be present.
+            API providers include `apiKey` (masked for non-admins); searxng, firecrawl and crawl4ai
+            include `baseUrl`. Additional keys may be present.
           additionalProperties: true
         isDefault:
           type: boolean
@@ -11516,12 +12066,24 @@ paths:
       description: |
         OAuth 2.0 Token Endpoint (RFC 6749 Section 4.1.3).
 
-        Exchanges an authorization code, client credentials, or refresh token for access tokens.
+        Exchanges an authorization code, client credentials, refresh token, or
+        service token for access tokens.
 
         **Grant Types:**
         - `authorization_code`: Exchange auth code for tokens (user-based)
         - `client_credentials`: Get tokens for machine-to-machine auth
         - `refresh_token`: Get new access token using refresh token. The refresh token must have been issued to the presenting `client_id`; one issued to another client is rejected with `400 invalid_grant` and is left untouched (not rotated, not revoked).
+        - `urn:ietf:params:oauth:grant-type:token-exchange`: Service-account
+          delegation (RFC 8693). A service account exchanges its own token for
+          a five-minute token that acts as one named person from its
+          allow-list. **Enterprise edition.** The Community build answers this
+          grant with `unsupported_grant_type` and leaves it out of discovery,
+          so check `grant_types_supported` rather than assuming it is there. **This grant sends no `client_id` or `client_secret`** —
+          the `subject_token` is the authentication, since it already carries
+          a verified identity and the scopes that bound it. Refusals about the
+          person asked for all return `400 invalid_target` with one wording;
+          the cause is recorded in the delegation log, which only an
+          administrator can read.
 
         For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
 
@@ -11560,11 +12122,15 @@ paths:
                 scope: openid profile email
                 id_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
         '400':
-          description: Invalid request (missing parameters, invalid code, etc.)
+          description: |
+            Invalid request (missing parameters, invalid code, a refusal from
+            the token-exchange grant, etc.). The body is the flat OAuth shape
+            `{ error, error_description }` that the controller builds for every
+            grant, which is what the 401 below already documents.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/OAuthErrorResponse'
         '401':
           description: Client authentication failed
           content:
@@ -15233,11 +15799,21 @@ paths:
         in: query
         required: false
         description: |
-          Page number (1-indexed). Combined with `limit` to paginate results.
+          Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
+          Prefer `cursor`: a page number is reached by reading the pages before it.
         schema:
           type: integer
           minimum: 1
           default: 1
+      - name: cursor
+        in: query
+        required: false
+        description: |
+          Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
+          response. Send it with the same path, filters and sort as the request that returned
+          it; a cursor issued for another place, user or listing mode is refused with 400.
+        schema:
+          type: string
       - name: limit
         in: query
         required: false
@@ -15753,11 +16329,21 @@ paths:
         in: query
         required: false
         description: |
-          Page number (1-indexed). Combined with `limit` to paginate results.
+          Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
+          Prefer `cursor`: a page number is reached by reading the pages before it.
         schema:
           type: integer
           minimum: 1
           default: 1
+      - name: cursor
+        in: query
+        required: false
+        description: |
+          Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
+          response. Send it with the same path, filters and sort as the request that returned
+          it; a cursor issued for another place, user or listing mode is refused with 400.
+        schema:
+          type: string
       - name: limit
         in: query
         required: false
@@ -16418,6 +17004,9 @@ paths:
         **Sorting:**
 
         Conversations are sorted by last activity timestamp (most recent first) by default.
+        With `source=owned`, conversations the caller pinned
+        (`PATCH /conversations/{conversationId}/pin`) come first, in the same order,
+        whatever `sortBy` is. `source=shared` is never pinned-first.
       operationId: getAllConversations
       security:
       - bearerAuth: []
@@ -17690,17 +18279,7 @@ paths:
                             modelInfo:
                               $ref: '#/components/schemas/ConversationModelInfo'
                             appliedFilters:
-                              type: object
-                              additionalProperties: false
-                              properties:
-                                apps:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
-                                kb:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
+                              $ref: '#/components/schemas/AppliedFilters'
                             attachments:
                               type: array
                               description: |
@@ -18060,6 +18639,12 @@ paths:
         The conversation initiator can always delete. Users the conversation has
         been shared with may delete it only when their `sharedWith.accessLevel`
         is `write`.
+
+        **Artifacts:** before the conversation is marked deleted, every artifact
+        the caller created in it is deleted for good (every version and stored
+        file), and so are older stored outputs of the conversation. If that cannot
+        be done the conversation is left in place and the error is returned
+        (for example 503); repeating the request finishes the cleanup.
       operationId: deleteConversationById
       security:
       - bearerAuth: []
@@ -18747,6 +19332,109 @@ paths:
           description: Conversation not found or caller lacks unarchive permission
         '500':
           description: Persistence layer failed to update the conversation document.
+  /conversations/{conversationId}/pin:
+    patch:
+      tags:
+      - Conversations
+      summary: Pin conversation
+      description: |
+        Pin a conversation so it is listed first in the caller's own conversation list.
+
+        **Access:**
+
+        Owner only: the caller must be the conversation's `initiator`. People the
+        conversation is shared with, even with `write` access, cannot pin it, and
+        their own lists are not affected by the owner's pin.
+
+        **Behaviour:**
+
+        Idempotent: pinning an already pinned conversation succeeds and changes nothing.
+        Archived and deleted conversations cannot be pinned. Archiving a pinned
+        conversation removes its pin. Pinning does not change `lastActivityAt` or
+        `updatedAt`, so the conversation keeps its place among the other pinned chats.
+
+        - Path params: `conversationId`
+        - Query params: none
+        - Body: none
+      operationId: pinConversation
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - conversation:write
+      parameters:
+      - name: conversationId
+        in: path
+        required: true
+        description: Conversation identifier
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '200':
+          description: Conversation is pinned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPinResponse'
+        '400':
+          description: Missing user or organization context, or `conversationId` is not a valid id
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - token is missing the `conversation:write` scope
+        '404':
+          description: Conversation not found, deleted, archived, an agent conversation, or not owned by the caller.
+        '500':
+          description: Persistence layer failed to update the conversation document.
+  /conversations/{conversationId}/unpin:
+    patch:
+      tags:
+      - Conversations
+      summary: Unpin conversation
+      description: |
+        Remove a conversation's pin so it is listed by recent activity again.
+
+        **Access:**
+
+        Owner only, as for `PATCH /conversations/{conversationId}/pin`.
+
+        **Behaviour:**
+
+        Idempotent: unpinning a conversation that is not pinned succeeds and changes nothing.
+
+        - Path params: `conversationId`
+        - Query params: none
+        - Body: none
+      operationId: unpinConversation
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - conversation:write
+      parameters:
+      - name: conversationId
+        in: path
+        required: true
+        description: Conversation identifier
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '200':
+          description: Conversation is not pinned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPinResponse'
+        '400':
+          description: Missing user or organization context, or `conversationId` is not a valid id
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - token is missing the `conversation:write` scope
+        '404':
+          description: Conversation not found, deleted, an agent conversation, or not owned by the caller.
+        '500':
+          description: Persistence layer failed to update the conversation document.
   /conversations/{conversationId}/message/{messageId}/regenerate:
     post:
       tags:
@@ -18830,6 +19518,54 @@ paths:
             Cannot regenerate. Common causes: target message is not the last
             message in the conversation, target message is not of type
             `bot_response`, or no preceding `user_query` exists.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
+  /conversations/{conversationId}/message/{messageId}/fork:
+    post:
+      tags:
+      - Conversations
+      summary: Fork conversation from a message
+      description: |
+        Copy this conversation into a new private chat owned by the caller,
+        including every message up to and including `messageId`. The original
+        conversation is left unchanged.
+
+        Only the owner of the conversation can fork it. A shared recipient or a
+        project member gets 404, because their access to the original's
+        attachments and artifacts is revoked on unshare. The fork does not
+        inherit share settings. If the source is linked to a project the caller
+        can still see, the fork stays in that project but is private to the
+        caller; otherwise it is created outside the project.
+      operationId: forkConversation
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - conversation:chat
+      parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      - name: messageId
+        in: path
+        required: true
+        description: Inclusive last message to copy into the new chat
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '201':
+          description: Forked conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkConversationResponse'
+        '400':
+          description: Invalid conversation or message id
         '401':
           description: Unauthorized
         '404':
@@ -18984,11 +19720,21 @@ paths:
         Matching is meaning-based, so relevant results surface even when
         the wording differs from the query.
 
-        Use optional `filters` to narrow the scope:
+        Use optional `filters` to narrow the scope (see `Filters`):
 
-        - `filters.apps` — restrict to specific connector apps (for
-          example Google Drive or Confluence).
-        - `filters.kb` — restrict to specific knowledge bases.
+        - `filters.apps` — restrict to whole apps: connector instances
+          (for example Google Drive or Confluence) and collections.
+          `filters.kb` is the older name for collections and means the
+          same.
+        - `filters.recordGroups` — restrict to record groups (a drive, a
+          space, a project), each with the groups nested in it.
+        - `filters.records` — restrict to folders or records, each with
+          everything under it.
+        - `filters.recordsExact` — restrict to records alone, without
+          what is under them.
+
+        The keys are a union. With any of the last three present, an
+        absent or empty `apps` / `kb` means no whole app.
 
         The response returns a `searchId` for the persisted search along
         with ranked matches, each carrying a relevance score and the
@@ -19037,11 +19783,17 @@ paths:
         '404':
           description: |
             A referenced knowledge base or app filter could not be
-            resolved.
+            resolved, or nothing selected below app level exists or is
+            readable by the caller ("Nothing in your selection is
+            available to search").
         '422':
           description: |
-            `filters.entityFilters` matches too many records the caller can
-            read. Narrow it: a tighter range, a name, or fewer kinds.
+            The search cannot run as asked. `filters.entityFilters` matches
+            too many records the caller can read (narrow it: a tighter range,
+            a name, or fewer kinds), or the selection below app level covers
+            more nodes than one search may (50,000 by default) or touches a
+            source that is still being prepared for folder-level search. The
+            message says which and what to change.
           content:
             application/json:
               schema:
@@ -20752,6 +21504,55 @@ paths:
             with offset information.
         '401':
           description: Unauthorized
+  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/fork:
+    post:
+      tags:
+      - Agents
+      summary: Fork agent conversation from a message
+      description: |
+        Copy this agent conversation into a new private chat owned by the
+        caller, including every message up to and including `messageId`. The
+        original conversation is left unchanged.
+
+        Only the owner of the conversation can fork it; anyone else gets 404.
+      operationId: forkAgentConversation
+      security:
+      - bearerAuth: []
+      - oauth2:
+        - agent:execute
+      parameters:
+      - name: agentKey
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: objectId
+      - name: messageId
+        in: path
+        required: true
+        description: Inclusive last message to copy into the new chat
+        schema:
+          type: string
+          format: objectId
+      responses:
+        '201':
+          description: Forked conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkConversationResponse'
+        '400':
+          description: Invalid conversation, message or agent id
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
   /agents/{agentKey}/conversations/{conversationId}/cancel:
     post:
       tags:
@@ -21202,6 +22003,12 @@ paths:
         - deleting a nonexistent conversation returns success with `null`
         - deleting through a different `agentKey` returns success with `null`
         - deleting an already deleted conversation returns success with `null`
+
+        **Artifacts:** before the conversation is marked deleted, every artifact
+        the caller created in it is deleted for good (every version and stored
+        file). Artifacts another participant created stay theirs. If the cleanup
+        cannot be done the conversation is left in place and the error is
+        returned (for example 503); repeating the request finishes it.
       operationId: deleteAgentConversationById
       security:
       - bearerAuth: []
@@ -22406,7 +23213,10 @@ paths:
         the budget show its most relevant blocks first, with the skipped
         ranges marked. `mode=thread` returns every message of the Slack
         thread the record belongs to, oldest first, as far as the caller may
-        see them.
+        see them. A Slack record in no single thread (several channel
+        messages in one record, or a message without replies) returns itself,
+        then the replies of each thread its messages started; the first page
+        opens with a bracketed note saying which.
 
         **Permission scoping:**
 
@@ -22452,7 +23262,7 @@ paths:
       - name: mode
         in: query
         required: false
-        description: '`record` (default) reads this record. `thread` reads every record of the Slack thread this message belongs to, oldest first; a record outside any thread answers `422`.'
+        description: '`record` (default) reads this record. `thread` reads every record of the Slack thread this message belongs to, oldest first. A Slack record in no single thread reads as itself, then the threads its messages started (at most 10). A record that is not from Slack answers `422`.'
         schema:
           type: string
           enum:
@@ -22495,8 +23305,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: |
-            `mode=thread` was asked of a record that is not part of a Slack
-            thread.
+            `mode=thread` was asked of a record that is not from Slack. Every
+            Slack message record can be read in thread mode.
           content:
             application/json:
               schema:
@@ -23712,14 +24522,22 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
+      deprecated: true
+      x-speakeasy-deprecation-message: 'Use PUT /connectors/{connectorId}/config/filters-sync instead, with a body of {sync?, filters?: {sync, indexing}} (the flat filters map this route takes is ignored there: the call returns 200 and saves none of it), and only while the connector is disabled. This endpoint will be removed in a future release.'
       tags:
       - Connector Filters
-      summary: Save filter selections
+      summary: Save filter selections (deprecated)
       description: |
+        <b>Deprecated.</b> Save filters with
+        <code>PUT /connectors/{connectorId}/config/filters-sync</code> instead, which is what the
+        PipesHub app uses. That route takes <code>{sync?, filters?: {sync, indexing}}</code>. It ignores the
+        flat <code>filters</code> map this one takes: the call still returns 200, but nothing is saved.
+        It also refuses while the connector is active, so disable it first.
+        This endpoint will be removed in a future release.<br><br>
+        What this endpoint saves goes to <code>filters.values</code>, which sync does not read:
+        sync reads <code>filters.sync</code> and <code>filters.indexing</code>.<br><br>
         Save the user's filter selections for a connector.<br><br>
         <b>Overview:</b><br>
-        After viewing filter options, use this endpoint to save the
-        selected values. These determine what data will be synced.<br><br>
         <b>Request:</b><br>
         <code>filters</code> must hold at least one entry: <code>{"filters": {}}</code> is
         refused with <code>400</code>. The server stores whatever it is given under the
@@ -24583,7 +25401,7 @@ paths:
         description: |
           Category of AI model to retrieve.
 
-          Must be one of: `llm`, `embedding`, `ocr`, `slm`, `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`.
+          Must be one of: `llm`, `embedding`, `ocr`, `slm`, `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`, `decision`.
         schema:
           $ref: '#/components/schemas/ModelType'
       responses:
@@ -24759,7 +25577,7 @@ paths:
                                 message:
                                   type: string
                                   description: Human-readable Zod validation message.
-                                  example: Invalid enum value. Expected 'ocr' | 'embedding' | 'llm' | 'slm' | 'reasoning' | 'multiModal' | 'imageGeneration' | 'tts' | 'stt', received 'llmr'
+                                  example: Invalid enum value. Expected 'ocr' | 'embedding' | 'llm' | 'slm' | 'reasoning' | 'multiModal' | 'imageGeneration' | 'tts' | 'stt' | 'decision', received 'llmr'
                                 code:
                                   type: string
                                   description: Machine-readable error code mapped from the Zod issue code.
@@ -24784,7 +25602,7 @@ paths:
                   metadata:
                     errors:
                     - field: params.modelType
-                      message: Invalid enum value. Expected 'ocr' | 'embedding' | 'llm' | 'slm' | 'reasoning' | 'multiModal' | 'imageGeneration' | 'tts' | 'stt', received 'llmr'
+                      message: Invalid enum value. Expected 'ocr' | 'embedding' | 'llm' | 'slm' | 'reasoning' | 'multiModal' | 'imageGeneration' | 'tts' | 'stt' | 'decision', received 'llmr'
                       code: INVALID_ENUM
                       value: ''
         '401':
