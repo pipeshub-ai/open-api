@@ -1,0 +1,15 @@
+overlay: 1.0.0
+info:
+  title: SDK README summary
+  version: 1.0.0
+actions:
+  # Speakeasy prints info.description as each SDK README's Summary, which is the
+  # package page on PyPI and npm. The full API description stays in the spec.
+  - target: $.info
+    update:
+      description: |
+        Search and chat over your company's knowledge from your own code.
+
+        PipesHub connects workplace apps such as Google Drive, Slack, Confluence and Jira, indexes their content, and answers questions with citations to the source. Use this SDK to search, chat with assistants and agents, manage knowledge bases and connectors, and sign in with OAuth 2.0 or a personal access token.
+
+        API reference: https://docs.pipeshub.com/developer/api-reference

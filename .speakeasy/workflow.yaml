@@ -4,6 +4,8 @@ sources:
     PipesHub API:
         inputs:
             - location: source_specs/pipeshub-sdk-openapi.yaml
+        overlays:
+            - location: .speakeasy/sdk-summary-overlay.yaml
         registry:
             location: registry.speakeasyapi.dev/pipeshub/test/pipes-hub-api
 targets:
