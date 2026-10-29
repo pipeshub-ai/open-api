@@ -13,3 +13,19 @@ actions:
         PipesHub connects workplace apps such as Google Drive, Slack, Confluence and Jira, indexes their content, and answers questions with citations to the source. Use this SDK to search, chat with assistants and agents, manage knowledge bases and connectors, and sign in with OAuth 2.0 or a personal access token.
 
         API reference: https://docs.pipeshub.com/developer/api-reference
+  # The README's first example. Without this Speakeasy picks the first operation, OAuth token exchange.
+  # Retrieval is read-only and saves no search history, so the snippet is safe to paste and run.
+  - target: $.paths["/retrieve"].post
+    update:
+      x-speakeasy-usage-example:
+        title: Retrieve passages with citations
+        position: 1
+  # The snippet copies this example, whose collection filter matches nothing on a real instance.
+  - target: $.paths["/retrieve"].post.requestBody.content["application/json"].examples.simple.value.filters
+    remove: true
+  # Speakeasy puts https:// in front of a server URL that starts with a variable, so a default that
+  # already had the scheme sent every request to https://https//app.pipeshub.com.
+  - target: $.servers[*].variables.instance_url
+    update:
+      default: app.pipeshub.com
+      description: Host name, with an optional port, of a PipesHub instance served over HTTPS. For a plain-HTTP instance, such as a local one, set the full server URL instead.
