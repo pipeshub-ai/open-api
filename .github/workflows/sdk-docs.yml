@@ -1,0 +1,152 @@
+name: SDK docs
+
+# Builds the versioned SDK pages of docs.pipeshub.com and opens a pull request in
+# pipeshub-ai/documentation. For each SDK release tag the three SDK repos share, it writes the
+# spec that release was generated from (with Python, TypeScript and Go code samples on every
+# operation) and each SDK's README at that tag, then lists the versions in docs.json.
+# scripts/build_sdk_docs.py does the work; run it locally with the same arguments.
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: "SDK release tags to build, comma-separated (empty: every tag all three SDKs share, from min_version)"
+        required: false
+        default: ""
+      min_version:
+        description: "Oldest release to build when versions is empty"
+        required: false
+        default: "v1.6.0"
+      docs_ref:
+        description: "documentation branch to start from"
+        required: false
+        default: "main"
+  # shortcut: pilot only. workflow_dispatch needs this file on main, so until it merges the pilot
+  # runs on pushes to its branch. Remove this trigger and the docs_ref fallback below before merging.
+  push:
+    branches: [feat/versioned-sdk-docs]
+    paths:
+      - ".github/workflows/sdk-docs.yml"
+      - "scripts/build_sdk_docs.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-docs
+  cancel-in-progress: false
+
+env:
+  SPEAKEASY_VERSION: v1.801.0
+  DOCS_REF: ${{ inputs.docs_ref || 'feat/versioned-sdk-docs' }}
+  DOCS_BRANCH: auto/sdk-docs
+
+jobs:
+  build:
+    name: Build versioned SDK docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout spec repo (full history, to read each release's spec)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout pipeshub-sdk-python
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/pipeshub-sdk-python
+          path: sdks/pipeshub-sdk-python
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout pipeshub-sdk-typescript
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/pipeshub-sdk-typescript
+          path: sdks/pipeshub-sdk-typescript
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout pipeshub-sdk-go
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/pipeshub-sdk-go
+          path: sdks/pipeshub-sdk-go
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout documentation
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/documentation
+          ref: ${{ env.DOCS_REF }}
+          path: docs
+          token: ${{ secrets.DOCS_GH_TOKEN || secrets.GH_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Install Speakeasy CLI
+        run: |
+          curl -fsSL -o /tmp/speakeasy.zip https://github.com/speakeasy-api/speakeasy/releases/download/${SPEAKEASY_VERSION}/speakeasy_linux_amd64.zip
+          unzip -o /tmp/speakeasy.zip -d /usr/local/bin speakeasy
+          chmod +x /usr/local/bin/speakeasy
+
+      - name: Test the build script
+        run: python scripts/test_build_sdk_docs.py
+
+      - name: Build the SDK pages
+        env:
+          SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
+          VERSIONS: ${{ inputs.versions }}
+          MIN_VERSION: ${{ inputs.min_version || 'v1.6.0' }}
+        run: |
+          python scripts/build_sdk_docs.py --sdks sdks --open-api . --docs docs \
+            --versions "$VERSIONS" --min-version "$MIN_VERSION" | tee build.log
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate the docs site
+        working-directory: docs
+        run: npx --yes mint@latest validate
+
+      - name: Open the documentation pull request
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_GH_TOKEN || secrets.GH_TOKEN }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No documentation changes." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          versions="$(sed -n 's/^docs.json SDK versions: //p' ../build.log)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$DOCS_BRANCH"
+          git add -A
+          git commit -s -m "docs(sdks): build versioned SDK pages for ${versions}" \
+            -m "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} from ${GITHUB_REPOSITORY}@${GITHUB_SHA::7}."
+          git push origin "$DOCS_BRANCH" --force
+          body="$(cat <<EOF
+          Versioned SDK pages for **${versions}**, built by the [SDK docs workflow](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) in \`${GITHUB_REPOSITORY}\`.
+
+          Each version has the spec that SDK release was generated from, with Python, TypeScript and Go code samples on every operation, and each SDK's README at that tag. The SDKs tab lists the versions, newest first.
+
+          \`\`\`
+          $(cat ../build.log)
+          \`\`\`
+          EOF
+          )"
+          gh pr create --repo pipeshub-ai/documentation --base main --head "$DOCS_BRANCH" \
+            --title "docs(sdks): versioned SDK pages (${versions})" --body "$body" \
+            || gh pr edit "$DOCS_BRANCH" --repo pipeshub-ai/documentation --body "$body"
+          echo "Pushed ${DOCS_BRANCH} with versions ${versions}." >> "$GITHUB_STEP_SUMMARY"
