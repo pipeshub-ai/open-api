@@ -1,0 +1,165 @@
+name: SDK docs
+
+# Builds the API reference of docs.pipeshub.com and opens a pull request in
+# pipeshub-ai/documentation: the public part of the latest pipeshub-ai release's OpenAPI spec, with
+# a Python, TypeScript and Go example on every operation: the example of the latest release all
+# three SDKs share where they cover it, else a plain HTTP request. The SDK guide
+# (developer/sdks.mdx) is written by hand.
+# scripts/build_sdk_docs.py does the work; run it locally with the same arguments.
+#
+# Runs daily (a new PipesHub or SDK release shows up within a day), when an SDK release workflow
+# sends repository_dispatch "sdk-release", or by hand. A run with nothing new changes nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: "SDK release tag to document (empty: the newest tag all three SDKs share)"
+        required: false
+        default: ""
+      spec_ref:
+        description: "pipeshub-ai tag or branch whose spec the API reference documents (empty: latest release)"
+        required: false
+        default: ""
+  repository_dispatch:
+    types: [sdk-release]
+  schedule:
+    - cron: "30 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-docs
+  cancel-in-progress: false
+
+env:
+  DOCS_REF: main
+  DOCS_BRANCH: auto/sdk-docs
+
+jobs:
+  build:
+    name: Build the API reference
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout open-api
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout pipeshub-sdk-python
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/pipeshub-sdk-python
+          path: sdks/pipeshub-sdk-python
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout pipeshub-sdk-typescript
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/pipeshub-sdk-typescript
+          path: sdks/pipeshub-sdk-typescript
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout pipeshub-sdk-go
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/pipeshub-sdk-go
+          path: sdks/pipeshub-sdk-go
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout documentation
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/documentation
+          ref: ${{ env.DOCS_REF }}
+          path: docs
+          token: ${{ secrets.DOCS_GH_TOKEN || secrets.GH_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Download the spec of the release to document
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPEC_REF: ${{ inputs.spec_ref }}
+        run: |
+          ref="$SPEC_REF"
+          if [ -z "$ref" ]; then
+            # Highest stable vX.Y.Z among the published releases, as sync-openapi-spec.yml picks it.
+            ref="$(gh api --paginate "repos/pipeshub-ai/pipeshub-ai/releases?per_page=100" \
+              --jq '.[] | select((.draft or .prerelease) | not) | .tag_name' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+          fi
+          gh api -H "Accept: application/vnd.github.raw" \
+            "repos/pipeshub-ai/pipeshub-ai/contents/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml?ref=$ref" \
+            > pipeshub-openapi.yaml
+          echo "SPEC_REF=$ref" >> "$GITHUB_ENV"
+          echo "API reference from pipeshub-ai $ref" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test the build script
+        run: python scripts/test_build_sdk_docs.py
+
+      - name: Build the API reference
+        env:
+          SDK_VERSION: ${{ inputs.sdk_version }}
+        run: |
+          python scripts/build_sdk_docs.py --sdks sdks --docs docs --spec pipeshub-openapi.yaml \
+            --version "$SDK_VERSION" | tee build.log
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate the docs site
+        working-directory: docs
+        run: npx --yes mint@latest validate
+
+      - name: Open the documentation pull request
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_GH_TOKEN || secrets.GH_TOKEN }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No documentation changes." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          sdk="$(sed -n 's/^SDK samples: \(v[0-9.]*\),.*/\1/p' ../build.log)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$DOCS_BRANCH"
+          git add -A
+          # An open pull request that already has exactly these files needs no new commit (each
+          # commit names its run, so committing anyway would replace the PR head every day).
+          open_pr="$(gh pr list --repo pipeshub-ai/documentation --head "$DOCS_BRANCH" --state open --json number --jq 'length')"
+          if [ "$open_pr" != "0" ] && git fetch --quiet --depth=1 origin "$DOCS_BRANCH" \
+            && [ "$(git write-tree)" = "$(git rev-parse 'FETCH_HEAD^{tree}')" ]; then
+            echo "The open ${DOCS_BRANCH} pull request is up to date." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -s -m "docs(api): API reference from pipeshub-ai ${SPEC_REF}, SDK examples from ${sdk}" \
+            -m "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} from ${GITHUB_REPOSITORY}@${GITHUB_SHA::7}."
+          git push origin "$DOCS_BRANCH" --force
+          body="$(cat <<EOF
+          Built by the [SDK docs workflow](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) in \`${GITHUB_REPOSITORY}\`.
+
+          The API reference from the public endpoints of pipeshub-ai **${SPEC_REF}**, with the Python, TypeScript and Go example of SDK **${sdk}** on each endpoint the SDKs cover and a plain HTTP request in each language elsewhere.
+
+          \`\`\`
+          $(cat ../build.log)
+          \`\`\`
+          EOF
+          )"
+          gh pr create --repo pipeshub-ai/documentation --base main --head "$DOCS_BRANCH" \
+            --title "docs(api): API reference (${SPEC_REF}, SDK ${sdk})" --body "$body" \
+            || gh pr edit "$DOCS_BRANCH" --repo pipeshub-ai/documentation --body "$body"
+          echo "Pushed ${DOCS_BRANCH}: API reference ${SPEC_REF}, SDK ${sdk}." >> "$GITHUB_STEP_SUMMARY"
