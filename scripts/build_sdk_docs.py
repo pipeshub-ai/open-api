@@ -48,7 +48,8 @@ LANGS = {
     "go": ("pipeshub-sdk-go", "Go"),
 }
 TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
-HTTP_METHODS = ("get", "post", "put", "patch", "delete")
+# Every OpenAPI operation method; the order sets the order of a path's endpoints in the sidebar.
+HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options", "trace")
 API_GROUP = "API reference"
 API_SPEC = "api-reference/openapi.yaml"
 API_OVERVIEW = "developer/api-reference.mdx"
@@ -145,8 +146,12 @@ def public_spec(spec: dict) -> tuple[int, int]:
     for path, item in list(spec["paths"].items()):
         for method in [m for m in item if m in HTTP_METHODS]:
             op = item[method]
-            schemes = {name for req in op.get("security", default_security) for name in req}
-            if (schemes and schemes <= SERVICE_ONLY_SCHEMES) or DROP_TAGS & set(op.get("tags", [])):
+            # Security requirements are alternatives and the schemes inside one are all needed, so
+            # an operation is service-only when every alternative needs a service-only scheme. An
+            # empty alternative ({}) means anyone may call it.
+            reqs = op.get("security", default_security)
+            service_only = bool(reqs) and all(SERVICE_ONLY_SCHEMES & set(r) for r in reqs)
+            if service_only or DROP_TAGS & set(op.get("tags", [])):
                 del item[method]
                 dropped += 1
             else:

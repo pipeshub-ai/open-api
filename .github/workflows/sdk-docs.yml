@@ -138,6 +138,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B "$DOCS_BRANCH"
           git add -A
+          # An open pull request that already has exactly these files needs no new commit (each
+          # commit names its run, so committing anyway would replace the PR head every day).
+          open_pr="$(gh pr list --repo pipeshub-ai/documentation --head "$DOCS_BRANCH" --state open --json number --jq 'length')"
+          if [ "$open_pr" != "0" ] && git fetch --quiet --depth=1 origin "$DOCS_BRANCH" \
+            && [ "$(git write-tree)" = "$(git rev-parse 'FETCH_HEAD^{tree}')" ]; then
+            echo "The open ${DOCS_BRANCH} pull request is up to date." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           git commit -s -m "docs(api): API reference from pipeshub-ai ${SPEC_REF}, SDK examples from ${sdk}" \
             -m "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} from ${GITHUB_REPOSITORY}@${GITHUB_SHA::7}."
           git push origin "$DOCS_BRANCH" --force

@@ -4,7 +4,7 @@ endpoints an SDK does not cover yet, so every endpoint page has an example in ea
 Example values follow Mintlify's own request examples (the ones its cURL example shows): a
 schema's example, default or first enum value, else "<string>", 123, true and so on. Path
 parameters stay as {name} in the URL, as in the cURL example; required query and header
-parameters are filled in.
+parameters are filled in, array query parameters per their style and explode settings.
 """
 from __future__ import annotations
 
@@ -110,6 +110,26 @@ def _text(value) -> str:
     return value if isinstance(value, str) else json.dumps(value)
 
 
+def _query_pairs(name: str, value, param: dict) -> list[tuple[str, str]]:
+    """A query parameter as (name, value) pairs, serialized per its OpenAPI style and explode
+    (default form, exploded: ids=a&ids=b)."""
+    if not isinstance(value, list):
+        return [(name, _text(value))]
+    style = param.get("style", "form")
+    if style == "form" and param.get("explode", True):
+        return [(name, _text(v)) for v in value]
+    sep = {"spaceDelimited": " ", "pipeDelimited": "|"}.get(style, ",")
+    return [(name, sep.join(_text(v) for v in value))]
+
+
+def _grouped(pairs: list[tuple[str, str]]) -> dict:
+    """(name, value) pairs -> {name: value}, or {name: [values]} for a repeated name."""
+    out: dict = {}
+    for k, v in pairs:
+        out.setdefault(k, []).append(v)
+    return {k: v[0] if len(v) == 1 else v for k, v in out.items()}
+
+
 def request(spec: dict, path: str, method: str) -> dict:
     """What an example request to an operation sends: URL, query, headers and body."""
     item = spec["paths"][path]
@@ -122,12 +142,16 @@ def request(spec: dict, path: str, method: str) -> dict:
     for p in [*item.get("parameters", []), *op.get("parameters", [])]:
         p, _ = resolve(spec, p)
         params[(p["name"], p["in"])] = p
-    query, headers = {}, {}
+    query: list[tuple[str, str]] = []
+    headers: dict[str, str] = {}
     for (name, where), p in params.items():
         if not p.get("required") or where not in ("query", "header"):
             continue
         value = p["example"] if "example" in p else example(spec, p.get("schema", {}))
-        (query if where == "query" else headers)[name] = _text(value)
+        if where == "query":
+            query += _query_pairs(name, value, p)
+        else:
+            headers[name] = _text(value)
     security = op.get("security", spec.get("security", []))
     if any(s for s in security):
         headers = {"Authorization": "Bearer <token>", **headers}
@@ -153,12 +177,26 @@ def request(spec: dict, path: str, method: str) -> dict:
             body = {"kind": "multipart", "files": files, "fields": fields}
         elif kind == "application/x-www-form-urlencoded":
             body = {"kind": "form", "fields": {k: _text(v) for k, v in (value or {}).items()}}
-        else:
-            body = {"kind": "json", "value": value}
+        elif kind.split(";")[0].endswith("json"):  # application/json, application/merge-patch+json, ...
+            body = {"kind": "json", "type": kind, "value": value}
+        elif kind.startswith("text/"):
+            body = {"kind": "text", "type": kind, "value": _text(value)}
+        else:  # application/octet-stream, images, ...: send a file as is
+            body = {"kind": "file", "type": kind}
     return {"method": method.upper(), "url": base.rstrip("/") + path, "query": query, "headers": headers, "body": body}
 
 
+def _content_type(body: dict | None) -> dict[str, str]:
+    """The Content-Type header an example sets itself: for a body the HTTP client does not label
+    (text, a file, a JSON type other than application/json)."""
+    if body and (body["kind"] in ("text", "file") or (body["kind"] == "json" and body["type"] != "application/json")):
+        return {"Content-Type": body["type"]}
+    return {}
+
+
 # --- Python ---------------------------------------------------------------------------------------
+
+REQUESTS_FUNCTIONS = {"get", "post", "put", "patch", "delete", "head", "options"}
 
 def _py(value, indent: int = 0) -> str:
     pad, inner = " " * indent, " " * (indent + 4)
@@ -179,22 +217,31 @@ def python(req: dict) -> str:
     lines = [f"# {NOTE.format(sdk='Python')}", "import requests", "", f"url = {json.dumps(req['url'])}", ""]
     args = ["url"]
     if req["query"]:
-        lines += [f"params = {_py(req['query'])}", ""]
+        lines += [f"params = {_py(_grouped(req['query']))}", ""]
         args.append("params=params")
     body = req["body"]
+    headers = {**req["headers"], **_content_type(body)}
     if body and body["kind"] == "json":
         lines += [f"payload = {_py(body['value'])}", ""]
         args.append("json=payload")
+    elif body and body["kind"] == "text":
+        lines += [f"payload = {json.dumps(body['value'], ensure_ascii=False)}", ""]
+        args.append("data=payload")
+    elif body and body["kind"] == "file":
+        lines += [f'payload = open("{FILE}", "rb")', ""]
+        args.append("data=payload")
     elif body and body["fields"]:
         lines += [f"data = {_py(body['fields'])}", ""]
         args.append("data=data")
     if body and body["kind"] == "multipart" and body["files"]:
         lines += ["files = {" + ", ".join(f'{json.dumps(f)}: open("{FILE}", "rb")' for f in body["files"]) + "}", ""]
         args.append("files=files")
-    if req["headers"]:
-        lines += [f"headers = {_py(req['headers'])}", ""]
+    if headers:
+        lines += [f"headers = {_py(headers)}", ""]
         args.append("headers=headers")
-    lines += [f"response = requests.{req['method'].lower()}({', '.join(args)})", "", "print(response.text)"]
+    m = req["method"].lower()
+    call = f"requests.{m}(" if m in REQUESTS_FUNCTIONS else f'requests.request("{req["method"]}", '
+    lines += [f"response = {call}{', '.join(args)})", "", "print(response.text)"]
     return "\n".join(lines) + "\n"
 
 
@@ -208,21 +255,27 @@ def typescript(req: dict) -> str:
     lines = [f"// {NOTE.format(sdk='TypeScript')}"]
     body = req["body"]
     multipart = body and body["kind"] == "multipart"
-    if multipart and body["files"]:
+    if (multipart and body["files"]) or (body and body["kind"] == "file"):
         lines += ['import { openAsBlob } from "node:fs";']
     lines.append("")
     url = json.dumps(req["url"])
     if req["query"]:
-        lines += [f"const params = new URLSearchParams({_ts(req['query'])});", ""]
+        names = [k for k, _ in req["query"]]
+        # A repeated name needs the list-of-pairs form; an object keeps one value per name.
+        if len(set(names)) < len(names):
+            init = "[\n" + "".join(f"  [{json.dumps(k)}, {json.dumps(v, ensure_ascii=False)}],\n" for k, v in req["query"]) + "]"
+        else:
+            init = _ts(dict(req["query"]))
+        lines += [f"const params = new URLSearchParams({init});", ""]
         url = "`" + req["url"] + "?${params}`"
     if multipart:
         lines.append("const form = new FormData();")
         lines += [f'form.append({json.dumps(f)}, await openAsBlob("{FILE}"), "{FILE}");' for f in body["files"]]
         lines += [f"form.append({json.dumps(k)}, {json.dumps(v)});" for k, v in body["fields"].items()]
         lines.append("")
-    headers = dict(req["headers"])
+    headers = {**req["headers"], **_content_type(body)}
     if body and body["kind"] == "json":
-        headers["Content-Type"] = "application/json"
+        headers.setdefault("Content-Type", "application/json")
     options = [f'  method: "{req["method"]}",']
     if headers:
         options.append(f"  headers: {_ts(headers, 2)},")
@@ -230,6 +283,10 @@ def typescript(req: dict) -> str:
         options.append(f"  body: JSON.stringify({_ts(body['value'], 2)}),")
     elif body and body["kind"] == "form":
         options.append(f"  body: new URLSearchParams({_ts(body['fields'], 2)}),")
+    elif body and body["kind"] == "text":
+        options.append(f"  body: {json.dumps(body['value'], ensure_ascii=False)},")
+    elif body and body["kind"] == "file":
+        options.append(f'  body: await openAsBlob("{FILE}"),')
     elif multipart:
         options.append("  body: form,")
     lines += [f"const response = await fetch({url}, {{", *options, "});", "", "console.log(await response.text());"]
@@ -274,6 +331,14 @@ def go(req: dict) -> str:
         setup += [f"form.WriteField({json.dumps(k)}, {json.dumps(v)})" for k, v in body["fields"].items()]
         setup += ["form.Close()", ""]
         body_arg = "&payload"
+    elif kind == "text":
+        setup += [f"payload := strings.NewReader({json.dumps(body['value'])})", ""]
+        imports.add("strings")
+        body_arg = "payload"
+    elif kind == "file":
+        setup += [f'file, err := os.Open("{FILE}")', "if err != nil {", "\tpanic(err)", "}", "defer file.Close()", ""]
+        imports.add("os")
+        body_arg = "file"
     if req["query"]:
         imports.add("net/url")
 
@@ -281,11 +346,11 @@ def go(req: dict) -> str:
             "if err != nil {", "\tpanic(err)", "}"]
     if req["query"]:
         main.append("query := url.Values{}")
-        main += [f"query.Set({json.dumps(k)}, {json.dumps(v)})" for k, v in req["query"].items()]
+        main += [f"query.Add({json.dumps(k)}, {json.dumps(v)})" for k, v in req["query"]]
         main.append("req.URL.RawQuery = query.Encode()")
     main += [f"req.Header.Set({json.dumps(k)}, {json.dumps(v)})" for k, v in req["headers"].items()]
-    if kind == "json":
-        main.append('req.Header.Set("Content-Type", "application/json")')
+    if kind in ("json", "text", "file"):
+        main.append(f'req.Header.Set("Content-Type", {json.dumps(body["type"])})')
     elif kind == "form":
         main.append('req.Header.Set("Content-Type", "application/x-www-form-urlencoded")')
     elif kind == "multipart":

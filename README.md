@@ -10,6 +10,7 @@ Every endpoint page has Python, TypeScript and Go examples next to cURL. Where t
 The code samples come from each SDK repo's `docs/sdks/*/README.md`, so no Speakeasy key is needed. It runs daily, on an `sdk-release` repository dispatch, or from the Actions tab. Locally:
 
 ```bash
+python -m pip install pyyaml
 python scripts/build_sdk_docs.py --sdks <dir with the three SDK clones> --docs <documentation checkout> \
   --spec <pipeshub-ai pipeshub-openapi.yaml at a release>
 ```

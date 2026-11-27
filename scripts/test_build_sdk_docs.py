@@ -41,6 +41,13 @@ spec = {
         "/health": {"get": {"operationId": "getHealth", "security": []}},
     },
 }
+sec = {"paths": {
+    "/both": {"get": {"security": [{"scopedToken": [], "bearerAuth": []}]}},   # needs both: service-only
+    "/either": {"get": {"security": [{"scopedToken": []}, {}]}},                  # or anonymous: public
+    "/user": {"get": {"security": [{"scopedToken": []}, {"bearerAuth": []}]}},   # or a user token: public
+    "/head": {"head": {"security": [{"bearerAuth": []}]}}}}
+assert b.public_spec(sec) == (3, 1) and set(sec["paths"]) == {"/either", "/user", "/head"}
+
 assert b.public_spec(spec) == (3, 2)
 assert "/document/internal/upload" not in spec["paths"] and "/docs" not in spec["paths"]
 assert "/health" in spec["paths"]  # no auth at all is still public
@@ -136,7 +143,7 @@ hspec = {
     },
 }
 req = h.request(hspec, "/kb/{kbId}", "put")
-assert req["url"] == "https://app.pipeshub.com/api/v1/kb/{kbId}" and req["query"] == {"dryRun": "true"}
+assert req["url"] == "https://app.pipeshub.com/api/v1/kb/{kbId}" and req["query"] == [("dryRun", "true")]
 assert req["headers"] == {"Authorization": "Bearer <token>"}
 assert req["body"]["value"] == {"name": "<string>", "size": 5, "kind": "a", "when": "2023-11-07T05:31:56Z",
                                 "tags": ["<string>"], "parent": True, "self": {}}
@@ -146,5 +153,31 @@ up = h.request(hspec, "/upload", "post")
 assert up["headers"] == {} and up["body"] == {"kind": "multipart", "files": ["file"], "fields": {"note": "hi"}}
 assert 'form.append("file", await openAsBlob("<file>"), "<file>");' in h.typescript(up)
 assert 'form.CreateFormFile("file", "<file>")' in h.go(up)
+
+# query parameters per style/explode, non-JSON bodies, methods without a requests shortcut
+qspec = {"servers": [{"url": "https://h/api/v1"}], "security": [], "paths": {"/x": {
+    "get": {"parameters": [
+        {"name": "ids", "in": "query", "required": True, "schema": {"type": "array", "items": {"type": "string"}}, "example": ["a", "b"]},
+        {"name": "csv", "in": "query", "required": True, "explode": False, "schema": {"type": "array", "items": {"type": "integer"}}},
+        {"name": "one", "in": "query", "required": True, "schema": {"type": "string"}}]},
+    "put": {"requestBody": {"content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}}},
+    "post": {"requestBody": {"content": {"text/plain": {"example": "hello"}}}},
+    "patch": {"requestBody": {"content": {"application/merge-patch+json": {"example": {"a": 1}}}}},
+    "trace": {}}}}
+q = h.request(qspec, "/x", "get")
+assert q["query"] == [("ids", "a"), ("ids", "b"), ("csv", "123"), ("one", "<string>")], q["query"]
+assert 'params = {\n    "ids": [\n        "a",\n        "b",\n    ],' in h.python(q)
+assert 'new URLSearchParams([\n  ["ids", "a"],\n  ["ids", "b"],\n  ["csv", "123"],\n' in h.typescript(q), h.typescript(q)
+assert 'query.Add("ids", "a")' in h.go(q) and 'query.Add("ids", "b")' in h.go(q)
+f = h.request(qspec, "/x", "put")
+assert f["body"] == {"kind": "file", "type": "application/octet-stream"}
+assert 'payload = open("<file>", "rb")' in h.python(f) and '"Content-Type": "application/octet-stream"' in h.python(f)
+assert 'body: await openAsBlob("<file>"),' in h.typescript(f) and 'os.Open("<file>")' in h.go(f)
+tx = h.request(qspec, "/x", "post")
+assert tx["body"] == {"kind": "text", "type": "text/plain", "value": "hello"}
+assert 'body: "hello",' in h.typescript(tx) and 'req.Header.Set("Content-Type", "text/plain")' in h.go(tx)
+mp = h.request(qspec, "/x", "patch")
+assert '"Content-Type": "application/merge-patch+json"' in h.typescript(mp)
+assert 'requests.request("TRACE", url)' in h.python(h.request(qspec, "/x", "trace"))
 
 print("ok")
