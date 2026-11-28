@@ -9,8 +9,9 @@ Rules:
     headers, examples, links, callbacks) via transitive `$ref` closure.
   * Remove top-level tags no remaining operation references.
   * Strip the `x-pipeshub-sdk` marker from the output.
-  * Strip headers from error (non-2xx) responses, so they do not change what
-    an SDK method returns (see `strip_error_response_headers`).
+  * Strip `Set-Cookie` from every response, and all headers from error (non-2xx)
+    responses, so they do not change what an SDK method returns (see
+    `strip_cookie_headers` and `strip_error_response_headers`).
 """
 from __future__ import annotations
 
@@ -86,6 +87,54 @@ def _resolve_response(spec: dict, response: Any) -> Any:
     return response
 
 
+def _operations(spec: dict):
+    """Yield every operation object under `paths`."""
+    for path_item in (spec.get("paths") or {}).values():
+        if not isinstance(path_item, dict):
+            continue
+        for method, op in path_item.items():
+            if method.lower() in HTTP_METHODS and isinstance(op, dict):
+                yield op
+
+
+def _drop_headers(spec: dict, responses: dict, status: Any, drop) -> bool:
+    """Remove the headers `drop(name)` selects from one response. Returns True if any went.
+
+    A $ref'd response is replaced by an inline copy; the shared component is left as it is.
+    """
+    resolved = _resolve_response(spec, responses[status])
+    headers = resolved.get("headers") if isinstance(resolved, dict) else None
+    if not isinstance(headers, dict) or not any(drop(name) for name in headers):
+        return False
+    inline = copy.deepcopy(resolved)
+    kept = {name: h for name, h in headers.items() if not drop(name)}
+    if kept:
+        inline["headers"] = copy.deepcopy(kept)
+    else:
+        del inline["headers"]
+    responses[status] = inline
+    return True
+
+
+def strip_cookie_headers(spec: dict) -> int:
+    """Drop `Set-Cookie` from every response. Returns how many responses changed.
+
+    A cookie is the browser session's transport; an SDK client signs in with a bearer token
+    and keeps no cookie jar. Declared on a success response, `Set-Cookie` would still make
+    Speakeasy wrap the method's return value (see `strip_error_response_headers`), as it would
+    for refreshToken, which returned its body directly in v2.0.x.
+    """
+    changed = 0
+    for op in _operations(spec):
+        responses = op.get("responses")
+        if not isinstance(responses, dict):
+            continue
+        for status in list(responses):
+            if _drop_headers(spec, responses, status, lambda name: name.lower() == "set-cookie"):
+                changed += 1
+    return changed
+
+
 def strip_error_response_headers(spec: dict) -> int:
     """Drop the headers of error (non-2xx) responses. Returns how many responses changed.
 
@@ -100,29 +149,17 @@ def strip_error_response_headers(spec: dict) -> int:
     is replaced by an inline copy without them; the shared component is left as it is.
     """
     changed = 0
-    for path_item in (spec.get("paths") or {}).values():
-        if not isinstance(path_item, dict):
+    for op in _operations(spec):
+        responses = op.get("responses")
+        if not isinstance(responses, dict) or op.get("operationId") in KEEP_ERROR_HEADERS:
             continue
-        for method, op in path_item.items():
-            if method.lower() not in HTTP_METHODS or not isinstance(op, dict):
-                continue
-            responses = op.get("responses")
-            if not isinstance(responses, dict) or op.get("operationId") in KEEP_ERROR_HEADERS:
-                continue
-            if any(
-                _is_success(status) and (_resolve_response(spec, r) or {}).get("headers")
-                for status, r in responses.items()
-            ):
-                continue
-            for status, response in list(responses.items()):
-                if _is_success(status):
-                    continue
-                resolved = _resolve_response(spec, response)
-                if not isinstance(resolved, dict) or not resolved.get("headers"):
-                    continue
-                inline = copy.deepcopy(resolved)
-                del inline["headers"]
-                responses[status] = inline
+        if any(
+            _is_success(status) and (_resolve_response(spec, r) or {}).get("headers")
+            for status, r in responses.items()
+        ):
+            continue
+        for status in list(responses):
+            if not _is_success(status) and _drop_headers(spec, responses, status, lambda _: True):
                 changed += 1
     return changed
 
@@ -234,6 +271,7 @@ def main() -> int:
         return 1
 
     kept, dropped = filter_operations(spec)
+    cookies_stripped = strip_cookie_headers(spec)
     headers_stripped = strip_error_response_headers(spec)
     components_removed = prune_components(spec, used_components(spec))
     tags_removed = prune_tags(spec)
@@ -252,7 +290,7 @@ def main() -> int:
     print(
         f"filter_sdk_spec: kept={kept} dropped={dropped} "
         f"components_removed={components_removed} tags_removed={tags_removed} "
-        f"error_headers_stripped={headers_stripped}",
+        f"cookie_headers_stripped={cookies_stripped} error_headers_stripped={headers_stripped}",
         file=sys.stderr,
     )
     if kept == 0:
