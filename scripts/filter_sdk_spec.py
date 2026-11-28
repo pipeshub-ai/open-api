@@ -9,10 +9,13 @@ Rules:
     headers, examples, links, callbacks) via transitive `$ref` closure.
   * Remove top-level tags no remaining operation references.
   * Strip the `x-pipeshub-sdk` marker from the output.
+  * Strip headers from error (non-2xx) responses, so they do not change what
+    an SDK method returns (see `strip_error_response_headers`).
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import sys
 from typing import Any
 
@@ -29,6 +32,17 @@ COMPONENT_GROUPS = (
     "examples",
     "links",
     "callbacks",
+)
+
+# Operations whose error-response headers were already in the released SDKs (v2.0.x), so their
+# methods already return a { headers, result } wrapper. They keep those headers: removing them
+# would change the return type of a released method. Remove an entry only in a major release.
+KEEP_ERROR_HEADERS = frozenset(
+    {
+        "oauthUserInfo",
+        "getKnowledgeHubRootNodes",
+        "getKnowledgeHubChildNodes",
+    }
 )
 
 
@@ -54,6 +68,63 @@ def filter_operations(spec: dict) -> tuple[int, int]:
         if not any(k.lower() in HTTP_METHODS for k in path_item):
             del paths[path]
     return kept, dropped
+
+
+def _is_success(status: Any) -> bool:
+    return str(status).startswith("2")
+
+
+def _resolve_response(spec: dict, response: Any) -> Any:
+    """Follow a `#/components/responses/...` $ref; return anything else as is."""
+    if isinstance(response, dict) and isinstance(response.get("$ref"), str):
+        prefix = "#/components/responses/"
+        ref = response["$ref"]
+        if ref.startswith(prefix):
+            target = ((spec.get("components") or {}).get("responses") or {}).get(ref[len(prefix) :])
+            if isinstance(target, dict):
+                return target
+    return response
+
+
+def strip_error_response_headers(spec: dict) -> int:
+    """Drop the headers of error (non-2xx) responses. Returns how many responses changed.
+
+    Speakeasy turns a method's return value into a { headers, result } wrapper when any of the
+    operation's responses, an error response included, declares a header. A `Retry-After` on a
+    503 then changes the return type of a method that never returns that 503's body, and breaks
+    callers and the hand-written integrations in the SDK repos. An error response is raised as
+    an exception, which still carries the raw HTTP response and its headers.
+
+    Skipped: operations whose success response declares headers (they return the wrapper
+    anyway) and the operations in KEEP_ERROR_HEADERS. A $ref'd response that declares headers
+    is replaced by an inline copy without them; the shared component is left as it is.
+    """
+    changed = 0
+    for path_item in (spec.get("paths") or {}).values():
+        if not isinstance(path_item, dict):
+            continue
+        for method, op in path_item.items():
+            if method.lower() not in HTTP_METHODS or not isinstance(op, dict):
+                continue
+            responses = op.get("responses")
+            if not isinstance(responses, dict) or op.get("operationId") in KEEP_ERROR_HEADERS:
+                continue
+            if any(
+                _is_success(status) and (_resolve_response(spec, r) or {}).get("headers")
+                for status, r in responses.items()
+            ):
+                continue
+            for status, response in list(responses.items()):
+                if _is_success(status):
+                    continue
+                resolved = _resolve_response(spec, response)
+                if not isinstance(resolved, dict) or not resolved.get("headers"):
+                    continue
+                inline = copy.deepcopy(resolved)
+                del inline["headers"]
+                responses[status] = inline
+                changed += 1
+    return changed
 
 
 def _collect_refs(node: Any, refs: set[str]) -> None:
@@ -163,6 +234,7 @@ def main() -> int:
         return 1
 
     kept, dropped = filter_operations(spec)
+    headers_stripped = strip_error_response_headers(spec)
     components_removed = prune_components(spec, used_components(spec))
     tags_removed = prune_tags(spec)
 
@@ -179,7 +251,8 @@ def main() -> int:
 
     print(
         f"filter_sdk_spec: kept={kept} dropped={dropped} "
-        f"components_removed={components_removed} tags_removed={tags_removed}",
+        f"components_removed={components_removed} tags_removed={tags_removed} "
+        f"error_headers_stripped={headers_stripped}",
         file=sys.stderr,
     )
     if kept == 0:
